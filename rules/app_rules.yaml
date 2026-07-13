@@ -1,0 +1,81 @@
+inputs:
+  files:
+    data_summary: "数据汇总.xlsx"
+    income_cost: "考核表输出.xlsx"
+  sheets:
+    aux_ledger:
+      preferred: ["调整后序时账"]
+      fuzzy_contains_any: ["序时账", "辅助帐"]
+    income_cost:
+      preferred: ["收入成本表"]
+      fuzzy_contains_any: ["收入成本"]
+    customer_mapping:
+      preferred: ["客户调整校验"]
+      fuzzy_contains_any: ["客户调整"]
+  columns:
+    aux_ledger:
+      entity: ["主体账簿"]
+      month: ["月", "月份"]
+      day: ["日"]
+      voucher_no: ["凭证号"]
+      summary: ["摘要"]
+      acct1: ["一级科目"]
+      acct2: ["二级科目"]
+      acct3: ["三级科目"]
+      customer_book: ["账载客户"]
+      customer_actual: ["实际客户"]
+      cashflow_item: ["收支项目"]
+      dept: ["部门"]
+      project: ["项目"]
+      amount: ["本币"]
+      sealed: ["是否封存"]
+    income_cost:
+      entity: ["主体账簿"]
+      month: ["月", "月份"]
+      biz_type: ["三级科目"]
+      customer_book: ["账载客户"]
+      customer_actual: ["实际客户"]
+      dept: ["部门"]
+      project: ["项目"]
+      revenue_net: ["净额收入"]
+      revenue_gross: ["全额收入"]
+      cost_total: ["成本合计"]
+      profit: ["项目毛利润"]
+      settlement_cnt: ["结算人次"]
+      rebate: ["项目返费"]
+      third_party_cost: ["第三方挂靠成本", "第三方挂靠"]
+    customer_mapping:
+      entity: ["主体账簿"]
+      month: ["月", "月份"]
+      biz_type: ["业务类型", "三级科目"]
+      customer_book: ["账载客户"]
+      dept: ["部门"]
+      project: ["项目"]
+      customer_actual: ["实际客户"]
+
+thresholds:
+  drift_dominance_ratio: 0.7
+  gross_margin: {}
+
+aio:
+  enabled_default: false
+  model: "gpt-5.4"
+  base_url: ""
+  api_key_env: "OPENAI_API_KEY"
+  max_items_per_section: 40
+  max_output_tokens: 1200
+
+annotation_policy:
+  enabled_default: true
+  gap_columns: 1
+
+report_format:
+  sheet_names:
+    overview: "概览"
+    aux_rule_violations: "入账规则违规_辅助帐"
+    aux_suspect_wrong_account: "疑似错科目_辅助帐"
+    income_dim_anomalies: "维度异常_收入成本"
+    combo_drift_friendly: "主映射异常_友好视图"
+    income_gm_anomalies: "毛利异常_收入成本"
+    ai_review: "AI复核意见"
+  column_layouts: {}

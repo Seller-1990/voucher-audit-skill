@@ -1,0 +1,35 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+.coverage
+
+# Local IDE and upload staging files
+.claude/settings.local.json
+.uploads/
+
+# Local MCP setup contains machine-specific endpoints and credentials
+WINDSURF_MCP_SKILL_SETUP.md
+
+# 运行态输出
+logs/
+
+# 规则运行态产物：主分支不合并；如需在个人分支提交可 git add -f
+rules/active_rules.json
+rules/compiled_rules.yaml
+rules/versions/
+!rules/versions/.gitkeep
+
+# workdir 输出不应进入仓库
+凭证审核输出/
+
+# 临时文件
+temp_cn/
+temp_debug/
+temp_debug2/
+temp_debug3/
+temp_debug4/
+temp_debug_run/
+temp_debug_write/
+temp_test/
+temp_test_data/
