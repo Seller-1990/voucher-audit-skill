@@ -48,7 +48,7 @@ voucher-audit CLI
 │   └── generate_plan.py         # 生成规则执行计划
 ├── 核心模块 (voucher_audit/)
 │   ├── rules_engine.py          # 规则引擎
-│   ├── checks.py                # 11种审核规则实现
+│   ├── checks.py                # 审核规则执行器
 │   ├── excel_io.py              # Excel 读写
 │   └── runner.py                # 审核流程编排
 └── 规则配置 (rules/)
@@ -61,8 +61,15 @@ voucher-audit CLI
 ### 1. 安装依赖
 
 ```powershell
-cd "D:\OneDrive - PowerBI学谦\Software Development\工具软件\voucher-audit-skill"
+git clone https://github.com/Seller-1990/voucher-audit-skill.git
+cd voucher-audit-skill
 pip install -r requirements.txt
+```
+
+AI 复核为可选功能，需要额外安装 OpenAI SDK：
+
+```powershell
+pip install openai
 ```
 
 ### 2. 准备工作目录（workdir）
@@ -130,10 +137,10 @@ python -m tools.generate_plan --rules rules/compiled_rules.yaml --json plan.json
 
 ## 错误级别 (2 条)
 
-### INC_FULL_COMBO_DRIFT - 完整组合主映射漂移
+### INC_CUSTOMER_CONSISTENCY - 客户归属一致性检查
 - **Scope**: `income_cost`
-- **Type**: `combo_drift`
-- **描述**: 按（主体账簿、账载客户）为主键，检查历史主映射是否一致
+- **Type**: `customer_consistency_check`
+- **描述**: 检查客户映射、多主体、多部门和主映射漂移
 - **检查字段**: `主体账簿`, `账载客户`, `三级科目`, ...
 ```
 
@@ -149,7 +156,7 @@ python -m tools.analyze_audit report.xlsx --format yaml
 **输出示例**:
 ```
 📊 统计信息:
-   总规则数: 16
+   总规则数: 6
    错误级别: 2
    需确认级别: 1
    信息级别: 13
@@ -161,27 +168,22 @@ python -m tools.analyze_audit report.xlsx --format yaml
       ⚠️  影响: 减少紧急问题数量，优先处理真正重要的问题
 
    2. [中] 规则数量
-      当前共有 16 条审核规则，建议考虑合并相似的规则以提升效率
+      当前共有 6 条审核规则，可结合误报率持续调整阈值
       ⚠️  影响: 减少误报率，提高审核聚焦度
 ```
 
 ## 审核规则系统
 
-### 规则类型（11种）
+### 当前审核规则（6条）
 
 | 规则ID | 类型 | 严重度 | 检查维度 |
 |--------|------|--------|---------|
-| `INC_FULL_COMBO_DRIFT` | `combo_drift` | 错误 | 组合主映射稳定性 |
+| `INC_CUSTOMER_CONSISTENCY` | `customer_consistency_check` | 错误/需确认 | 客户映射、多主体、多部门和主映射漂移 |
 | `INC_REV_COST_ZERO_MISMATCH` | `rev_cost_zero_mismatch` | 错误 | 收入成本零值不匹配 |
-| `INC_CUSTOMER_MAPPING_CHECK` | `mapping_check` | 错误 | 客户映射一致性 |
-| `AUX_SUMMARY_ZY_PATTERN` | `forbidden_regex` | 需关注 | 摘要 Z*Y* 码 |
-| `AUX_SUMMARY_YS_PATTERN` | `forbidden_regex` | 需关注 | 摘要 Y*S* 码 |
-| `AUX_RED_FLUSH_ZS_NONPOSITIVE` | `hard_rule` | 错误 | 冲销格式合规性 |
-| `AUX_COST_WAGE_CASHFLOW_MISMATCH` | `hard_rule` | 错误 | 成本口径一致性 |
-| `AUX_SUMMARY_ZS_SUFFIX` | `summary_zs_suffix` | 错误 | 摘要 ZS 后缀格式 |
-| `INC_PM_CENTER_CUSTOMER_MULTI_DEPT` | `distinct_count` | 需确认 | 多部门关联 |
-| `INC_BOOK_CUSTOMER_MULTI_ACTUAL` | `distinct_count` | 错误 | 账载客户多实际客户 |
-| `INC_METRIC_PP_CHANGE` | `metric_pp_change` | 需确认 | 指标同比波动 |
+| `AUX_HEADCOUNT_DATA_CHECK` | `headcount_data_check` | 错误/需确认 | 摘要人次编码规范 |
+| `INC_NEG_GM_HIGH_RATIO` | `neg_profit_ratio` | 需确认 | 高比例负毛利 |
+| `INC_OUTSOURCING_NO_WAGE_OR_HANGKAO` | `outsourcing_missing_cost` | 需确认 | 外包成本结构 |
+| `INC_PP_CHANGE` | `pp_change` | 需确认 | 毛利率、单人毛利、返费等历史波动 |
 
 ### 规则配置（YAML 格式）
 
@@ -189,14 +191,15 @@ python -m tools.analyze_audit report.xlsx --format yaml
 
 ```yaml
 checks:
-  - id: INC_FULL_COMBO_DRIFT
-    name: "完整组合主映射漂移"
-    type: combo_drift
+  - id: INC_REV_COST_ZERO_MISMATCH
+    name: "收入/成本零值不匹配（限定业务类型）"
+    type: rev_cost_zero_mismatch
     scope: income_cost
     severity: "错误"  # 可改为"需确认"降低优先级
     params:
-      key_fields: ["主体账簿", "账载客户"]
-      min_amount_abs: 50000  # 调整阈值
+      key_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门", "项目"]
+      revenue_field: "净额收入"
+      cost_field: "成本合计"
 ```
 
 ### 核心特性
@@ -206,7 +209,7 @@ checks:
 ✅ **先预览再执行** - 确保审核前透明可控
 ✅ **版本化修复** - 规则变更可追溯、可回滚
 ✅ **智能修复** - 自动检测并生成修复补丁
-✅ **安全标注** - 源文件修改前自动备份
+✅ **安全标注** - 源文件修改前自动备份，失败时自动恢复
 ✅ **自然语言交互** - 直接对话添加规则，无需编辑YAML
 ✅ **规则可视化** - ASCII图表展示规则分布
 
@@ -313,7 +316,6 @@ python -m voucher_audit rules show-active
 
 ## 版本信息
 
-- **Python**: 3.8+
+- **Python**: 3.10+
 - **依赖**: openpyxl>=3.1, pandas>=2.0, PyYAML>=6.0, pywin32>=306 (Windows)
-- **作者**: Claude
 - **许可**: 未指定

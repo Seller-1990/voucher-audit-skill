@@ -6,9 +6,6 @@ from typing import Any, Iterable, Optional
 
 import pandas as pd
 
-from .security import backup_file
-
-
 ANNOTATION_HEADERS = ("凭证审核异常项", "凭证审核规则ID", "凭证审核命中原因")
 
 

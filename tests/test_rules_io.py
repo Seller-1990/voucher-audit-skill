@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from voucher_audit.rules_io import compile_rules, load_active_pointer
 
 
@@ -44,3 +46,23 @@ def test_load_active_pointer_ok(tmp_path: Path) -> None:
     got = load_active_pointer(repo)
     assert got is not None
     assert got.compiled_rules.name == "compiled.yaml"
+
+
+def test_load_active_pointer_rejects_paths_outside_repo(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    rules = repo / "rules"
+    rules.mkdir(parents=True)
+    outside = tmp_path / "outside.yaml"
+    outside.write_text("checks: []\n", encoding="utf-8")
+
+    pointer = {
+        "active": {
+            "app_rules": "../../outside.yaml",
+            "audit_rules": "../../outside.yaml",
+            "compiled_rules": "../../outside.yaml",
+        }
+    }
+    (rules / "active_rules.json").write_text(json.dumps(pointer), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="规则路径必须位于仓库内"):
+        load_active_pointer(repo)

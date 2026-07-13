@@ -83,9 +83,19 @@ def load_active_pointer(repo_root: Path) -> ActiveRulesPointer | None:
     c = str(active.get("compiled_rules", "")).strip()
     if not a or not b or not c:
         return None
-    app = (repo_root / a).resolve()
-    audit = (repo_root / b).resolve()
-    compiled = (repo_root / c).resolve()
+    root = repo_root.resolve()
+
+    def resolve_repo_path(value: str) -> Path:
+        resolved = (root / value).resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as e:
+            raise ValueError(f"规则路径必须位于仓库内：{value}") from e
+        return resolved
+
+    app = resolve_repo_path(a)
+    audit = resolve_repo_path(b)
+    compiled = resolve_repo_path(c)
     if not app.exists() or not audit.exists() or not compiled.exists():
         return None
     return ActiveRulesPointer(app_rules=app, audit_rules=audit, compiled_rules=compiled)

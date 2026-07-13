@@ -316,6 +316,7 @@ def write_source_annotations(bundle: SourceAnnotationBundle, logger: Optional[Lo
         for workbook_path, plans in workbook_map.items():
             excel = None
             wb = None
+            backup_path: Optional[Path] = None
             old_calculation = None
             started = perf_counter()
             try:
@@ -369,6 +370,7 @@ def write_source_annotations(bundle: SourceAnnotationBundle, logger: Optional[Lo
                 # 标注成功，删除备份
                 try:
                     backup_path.unlink()
+                    backup_path = None
                 except Exception as e:
                     log.warn(f"删除备份文件失败：{backup_path.name} / {type(e).__name__}: {e}")
 
@@ -377,6 +379,28 @@ def write_source_annotations(bundle: SourceAnnotationBundle, logger: Optional[Lo
                 log.info(
                     f"源文件已保存：{workbook_path.name} / 写入耗时={write_elapsed:.1f}s / 保存耗时={save_elapsed:.1f}s / 总耗时={perf_counter() - started:.1f}s"
                 )
+            except Exception as original_error:
+                if wb is not None:
+                    try:
+                        wb.Saved = True
+                    except Exception:
+                        pass
+                    try:
+                        wb.Close(SaveChanges=False)
+                    except Exception as close_error:
+                        log.warn(f"回滚前关闭工作簿失败：{workbook_path.name} / {type(close_error).__name__}: {close_error}")
+                    wb = None
+                if backup_path is not None:
+                    try:
+                        restore_from_backup(workbook_path)
+                        log.warn(f"源文件标注失败，已从备份恢复：{workbook_path.name}")
+                    except Exception as restore_error:
+                        raise RuntimeError(
+                            f"源文件标注失败且备份恢复失败：{workbook_path.name} / "
+                            f"原始错误={type(original_error).__name__}: {original_error} / "
+                            f"恢复错误={type(restore_error).__name__}: {restore_error}"
+                        ) from restore_error
+                raise
             finally:
                 if wb is not None:
                     try:

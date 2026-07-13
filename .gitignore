@@ -8,9 +8,6 @@ __pycache__/
 .claude/settings.local.json
 .uploads/
 
-# Local MCP setup contains machine-specific endpoints and credentials
-WINDSURF_MCP_SKILL_SETUP.md
-
 # 运行态输出
 logs/
 

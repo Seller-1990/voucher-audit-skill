@@ -203,8 +203,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.enable_ai:
         try:
             import openai
-        except ImportError as e:
-            logger.error("AI功能需要安装 openai 库: pip install openai")
+        except ImportError:
+            message = "AI功能需要安装 openai 库: pip install openai"
+            log.error(message)
+            print(message, file=sys.stderr)
             return 1
 
     if annotate:
