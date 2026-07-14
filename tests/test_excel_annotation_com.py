@@ -24,6 +24,7 @@ class _FakeWorkbook:
     Saved = False
 
     def Save(self) -> None:
+        self.Saved = True
         return None
 
     def Close(self, SaveChanges: bool = False) -> None:
@@ -83,3 +84,63 @@ def test_annotation_failure_restores_backup(monkeypatch, tmp_path: Path) -> None
         excel_annotation_com.write_source_annotations(SourceAnnotationBundle(plans=(plan,)))
 
     assert restored == [workbook_path]
+
+
+def test_annotation_success_removes_backup(monkeypatch, tmp_path: Path) -> None:
+    workbook_path = tmp_path / "source.xlsx"
+    workbook_path.write_bytes(b"original")
+    backup_path = tmp_path / "source.bak"
+    backup_path.write_bytes(b"backup")
+    plan = QueryTableAnnotationPlan(
+        workbook_path=workbook_path,
+        worksheet_name="Sheet1",
+        table_name="Table1",
+        gap_columns=1,
+        headers=("异常项", "规则ID", "原因"),
+        row_annotations=(),
+        cell_highlights=(),
+        possible_highlight_columns=(),
+    )
+
+    monkeypatch.setattr(excel_annotation_com, "_load_com_modules", lambda: (_FakePythonCom(), _FakeWin32Client()))
+    monkeypatch.setattr(excel_annotation_com, "ensure_no_open_workbook", lambda _path: None)
+    monkeypatch.setattr(excel_annotation_com, "backup_file", lambda _path: backup_path)
+    monkeypatch.setattr(excel_annotation_com, "_write_plan_to_sheet", lambda *_args: None)
+
+    result = excel_annotation_com.write_source_annotations(SourceAnnotationBundle(plans=(plan,)))
+
+    assert result.ok
+    assert not backup_path.exists()
+
+
+def test_annotation_reports_original_and_restore_errors(monkeypatch, tmp_path: Path) -> None:
+    workbook_path = tmp_path / "source.xlsx"
+    workbook_path.write_bytes(b"original")
+    backup_path = tmp_path / "source.bak"
+    plan = QueryTableAnnotationPlan(
+        workbook_path=workbook_path,
+        worksheet_name="Sheet1",
+        table_name="Table1",
+        gap_columns=1,
+        headers=("异常项", "规则ID", "原因"),
+        row_annotations=(),
+        cell_highlights=(),
+        possible_highlight_columns=(),
+    )
+
+    monkeypatch.setattr(excel_annotation_com, "_load_com_modules", lambda: (_FakePythonCom(), _FakeWin32Client()))
+    monkeypatch.setattr(excel_annotation_com, "ensure_no_open_workbook", lambda _path: None)
+    monkeypatch.setattr(excel_annotation_com, "backup_file", lambda _path: backup_path)
+    monkeypatch.setattr(
+        excel_annotation_com,
+        "_write_plan_to_sheet",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("write failed")),
+    )
+    monkeypatch.setattr(
+        excel_annotation_com,
+        "restore_from_backup",
+        lambda _path: (_ for _ in ()).throw(OSError("restore failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="write failed.*restore failed"):
+        excel_annotation_com.write_source_annotations(SourceAnnotationBundle(plans=(plan,)))

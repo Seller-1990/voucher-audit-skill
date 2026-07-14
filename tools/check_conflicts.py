@@ -1,12 +1,10 @@
 #!/usr/bin/env python
 """规则冲突检测 - 检测重复、重叠的审核规则"""
 
-import sys
 import argparse
 import yaml
 from pathlib import Path
 from typing import Dict, List, Any
-from collections import defaultdict
 
 
 def load_rules(rules_path: Path) -> Dict[str, Any]:
@@ -48,7 +46,7 @@ def detect_conflicts(rules: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     # 检查重复规则ID
     rule_ids = [r.get("id") for r in checks if r.get("id")]
-    duplicates = [id for id in rule_ids if rule_ids.count(id) > 1]
+    duplicates = sorted({rule_id for rule_id in rule_ids if rule_ids.count(rule_id) > 1})
 
     for duplicate_id in duplicates:
         matching_rules = [r for r in checks if r.get("id") == duplicate_id]
@@ -112,13 +110,13 @@ def generate_conflict_report(conflicts: List[Dict[str, Any]]) -> str:
 
         elif conflict['type'] == "overlap":
             lines.append(f"\n   {conflict['message']}")
-            lines.append(f"\n   规则1:")
+            lines.append("\n   规则1:")
             lines.append(f"      ID: {conflict['rule1'].get('id')}")
             lines.append(f"      名称: {conflict['rule1'].get('name')}")
             lines.append(f"      类型: {conflict['rule1'].get('type')} ({conflict['rule1'].get('scope')})")
             lines.append(f"      描述: {conflict['rule1'].get('description')}")
 
-            lines.append(f"\n   规则2:")
+            lines.append("\n   规则2:")
             lines.append(f"      ID: {conflict['rule2'].get('id')}")
             lines.append(f"      名称: {conflict['rule2'].get('name')}")
             lines.append(f"      类型: {conflict['rule2'].get('type')} ({conflict['rule2'].get('scope')})")
@@ -139,35 +137,29 @@ def generate_conflict_report(conflicts: List[Dict[str, Any]]) -> str:
 
 def auto_fix_conflicts(conflicts: List[Dict[str, Any]], rules: Dict[str, Any]) -> int:
     """自动修复简单冲突"""
-    fixes = 0
     checks = rules.get("checks", [])
-    indices_to_remove = set()
+    indices_to_remove: set[int] = set()
+
+    seen_ids: set[str] = set()
+    for index, rule in enumerate(checks):
+        rule_id = str(rule.get("id", "")).strip()
+        if rule_id and rule_id in seen_ids:
+            indices_to_remove.add(index)
+        seen_ids.add(rule_id)
 
     for conflict in conflicts:
-        if conflict['type'] == "duplicate_id":
-            # 删除重复的规则（保留第一个，删除后面的）
-            rule_id = conflict['rules'][0].get("id")
-            for i, rule in enumerate(checks):
-                if rule.get("id") == rule_id and i != 0:
-                    indices_to_remove.add(i)
-
-        elif conflict['type'] == "overlap":
-            similarity = conflict['similarity']
-            if similarity > 0.85:  # 高相似度，删除重复的
-                lines.append("   检测到高相似度规则，建议删除其中一条")
-                # 这里可以根据规则名称、ID等判断保留哪一个
-                # 简单策略：删除ID较大的
-                rule1_id = conflict['rule1'].get("id", "")
-                rule2_id = conflict['rule2'].get("id", "")
-                indices_to_remove.add(i for i, r in enumerate(checks) if r.get("id") == rule2_id)
+        if conflict["type"] != "overlap" or conflict["similarity"] <= 0.85:
+            continue
+        duplicate_rule = conflict["rule2"]
+        duplicate_index = next((i for i, rule in enumerate(checks) if rule is duplicate_rule), None)
+        if duplicate_index is not None:
+            indices_to_remove.add(duplicate_index)
 
     # 反向排序，从后往前删除
-    for idx in sorted(list(indices_to_remove), reverse=True):
-        removed_rule = checks.pop(idx)
-        lines.append(f"   🔧 已删除重复规则: {removed_rule.get('id')} - {removed_rule.get('name')}")
-        fixes += 1
+    for idx in sorted(indices_to_remove, reverse=True):
+        checks.pop(idx)
 
-    return fixes
+    return len(indices_to_remove)
 
 
 def main():

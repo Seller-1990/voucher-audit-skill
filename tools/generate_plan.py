@@ -1,10 +1,9 @@
 #!/usr/bin/env python
 """规则预览工具 - 生成规则执行计划"""
 
-import sys
 import argparse
-import json
 import yaml
+from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Any
 
@@ -72,7 +71,7 @@ def export_markdown(plan: List[Dict[str, Any]], output_path: Path):
     lines = [
         "# 凭证审核执行计划",
         "",
-        f"生成时间: {Path(__file__).stat().st_mtime}",
+        f"生成时间: {datetime.now().astimezone().isoformat(timespec='seconds')}",
         f"规则总数: {len(plan)}",
         "",
         "",
@@ -105,7 +104,7 @@ def export_markdown(plan: List[Dict[str, Any]], output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="生成凭证审核执行计划")
-    parser.add_argument("--rules", default="rules/compiled_rules.yaml",
+    parser.add_argument("--rules", default="rules/audit_rules.yaml",
                         help="规则文件路径")
     parser.add_argument("--output", "-o", help="输出 Markdown 文件路径（可选）")
     parser.add_argument("--json", "-j", help="输出 JSON 文件路径（可选）")
@@ -124,7 +123,7 @@ def main():
     for item in plan:
         severity_count[item["severity"]] = severity_count.get(item["severity"], 0) + 1
 
-    print(f"\n📊 统计:")
+    print("\n📊 统计:")
     for severity, count in severity_count.items():
         print(f"   {severity}: {count} 条")
 

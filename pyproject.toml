@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "voucher-audit-skill"
+version = "0.2.0"
+description = "面向月末凭证审核的 Excel 规则引擎与 AI Skill"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "openpyxl>=3.1,<4",
+  "pandas>=2.0,<3",
+  "PyYAML>=6.0,<7",
+  "pywin32>=306; platform_system == 'Windows'",
+]
+
+[project.optional-dependencies]
+ai = ["openai>=1.0,<3"]
+dev = ["coverage>=7.0,<8", "pytest>=8.0,<9", "ruff>=0.6,<1"]
+
+[project.scripts]
+voucher-audit = "voucher_audit.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["voucher_audit*"]
+
+[tool.setuptools.package-data]
+voucher_audit = ["default_rules/*.yaml"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import pandas as pd
-import pytest
 
 from voucher_audit.checks import _headcount_data_check_aux
 

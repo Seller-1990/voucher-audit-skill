@@ -130,7 +130,7 @@ def main():
         sys.exit(1)
 
     # 统计输出
-    print(f"\n📊 统计信息:")
+    print("\n📊 统计信息:")
     print(f"   总规则数: {stats['total_rules']}")
     print(f"   错误级别: {stats['error_level']}")
     print(f"   需确认级别: {stats['warning_level']}")
@@ -154,16 +154,16 @@ def main():
             "stats": stats,
             "recommendations": recommendations
         }
-        print(f"\n📋 JSON 输出:")
+        print("\n📋 JSON 输出:")
         print(json.dumps(output, ensure_ascii=False, indent=2))
         if args.output:
             Path(args.output).write_text(json.dumps(output, ensure_ascii=False, indent=2))
     elif args.format == "yaml":
         patches = generate_yaml_patches(recommendations, report_path)
-        print(f"\n📝 YAML 调整建议:")
+        print("\n📝 YAML 调整建议:")
         print(patches)
     else:
-        print(f"\n📝 调整建议 (文本格式):")
+        print("\n📝 调整建议 (文本格式):")
         for rec in recommendations:
             print(f"\n### {rec['category']} [{rec['level']}]")
             print(f"{rec['suggestion']}")

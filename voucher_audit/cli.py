@@ -2,17 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
-import shutil
 import sys
 import tempfile
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Sequence, TypedDict, List, Dict, Optional
+from typing import Any, List, Sequence, TypedDict
 
-import yaml
 
-from .config import RuleConfig, load_rules_data
+from .cleanup import cleanup_targets, delete_cleanup_targets
 from .logging_util import make_logger
 from .preview import build_preview_items
 from .repair import suggest_repair
@@ -29,20 +26,6 @@ from .runner import load_audit_context, run_audit
 from .versioning import update_active_pointer, write_version_snapshot
 
 
-@dataclass(frozen=True)
-class RulesPaths:
-    """规则文件路径"""
-    app_rules: Path
-    audit_rules: Path
-    compiled_rules: Path
-
-
-@dataclass(frozen=True)
-class ActiveRulesPointer:
-    """活跃规则指针"""
-    app_rules: Path
-    audit_rules: Path
-    compiled_rules: Path
 
 
 class PreviewItem(TypedDict):
@@ -202,7 +185,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     # AI 相关处理（延迟导入，避免不必要的依赖）
     if args.enable_ai:
         try:
-            import openai
+            _ = __import__("openai")
         except ImportError:
             message = "AI功能需要安装 openai 库: pip install openai"
             log.error(message)
@@ -358,56 +341,31 @@ def cmd_rules_set_active(args: argparse.Namespace) -> int:
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
-    """清理临时文件和工作目录"""
-    log = make_logger()
-    temp_dirs = [
-        Path("temp_cn"),
-        Path("temp_debug"),
-        Path("temp_debug2"),
-        Path("temp_debug3"),
-        Path("temp_debug4"),
-        Path("temp_debug_run"),
-        Path("temp_debug_write"),
-    ]
-
-    output_dir = Path("凭证审核输出")
-    touched: List[str] = []
-
-    # 清理临时目录
-    for d in temp_dirs:
-        if d.exists():
-            if args.dry_run:
-                print(f"[DRY-RUN] 将删除: {d}")
-                touched.append(str(d))
-            else:
-                try:
-                    shutil.rmtree(d)
-                    print(f"已删除: {d}")
-                    touched.append(str(d))
-                except Exception as e:
-                    print(f"删除失败 {d}: {type(e).__name__}: {e}", file=sys.stderr)
-
-    # 清理输出目录
-    if output_dir.exists():
-        if args.dry_run:
-            print(f"[DRY-RUN] 将删除: {output_dir}")
-            touched.append(str(output_dir))
-        else:
-            try:
-                shutil.rmtree(output_dir)
-                print(f"已删除输出目录: {output_dir}")
-                touched.append(str(output_dir))
-            except Exception as e:
-                print(f"删除失败 {output_dir}: {type(e).__name__}: {e}", file=sys.stderr)
-
-    if not touched:
+    """清理指定工作目录内由本工具生成的目录。"""
+    try:
+        targets = cleanup_targets(Path(args.workdir))
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    if not targets:
         print("没有需要清理的文件或目录。")
         return 0
-
     if args.dry_run:
-        print(f"\n[DRY-RUN] 以下项目将被删除: {len(touched)} 项")
-    else:
-        log.info(f"清理完成，共删除 {len(touched)} 项")
+        for target in targets:
+            print(f"[DRY-RUN] 将删除: {target}")
+        print(f"\n[DRY-RUN] 以下项目将被删除: {len(targets)} 项")
+        return 0
+    if not args.yes:
+        print("清理会永久删除以上目录。请先使用 --dry-run 检查，并显式传入 --yes。", file=sys.stderr)
+        return 2
+    result = delete_cleanup_targets(targets)
+    for target in result.deleted:
+        print(f"已删除: {target}")
+    for target, error in result.failed:
+        print(f"删除失败 {target}: {error}", file=sys.stderr)
+    if result.failed:
+        return 1
+    make_logger().info(f"清理完成，共删除 {len(result.deleted)} 项")
     return 0
 
 
@@ -447,7 +405,9 @@ def build_parser() -> argparse.ArgumentParser:
     sx.set_defaults(func=cmd_repair)
 
     sc = sub.add_parser("cleanup", help="清理临时文件和工作目录")
+    sc.add_argument("--workdir", default=".", help="只清理该目录内由本工具生成的目录")
     sc.add_argument("--dry-run", action="store_true", help="仅列出要删除的文件，不实际删除")
+    sc.add_argument("--yes", action="store_true", help="确认永久删除列出的目录")
     sc.set_defaults(func=cmd_cleanup)
 
     rules = sub.add_parser("rules", help="规则管理")

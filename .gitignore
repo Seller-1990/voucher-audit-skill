@@ -3,6 +3,9 @@ __pycache__/
 .pytest_cache/
 .venv/
 .coverage
+build/
+*.egg-info/
+.codex_patch
 
 # Local IDE and upload staging files
 .claude/settings.local.json

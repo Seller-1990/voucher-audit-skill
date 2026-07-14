@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
 
 from .excel_io import match_sheet_name, open_workbook, read_sheet
 from .rules_io import dump_yaml, load_app_rules, load_audit_rules

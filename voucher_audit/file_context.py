@@ -68,7 +68,10 @@ def read_text_file(workdir: Path, input_path: str, max_chars: int = 12000) -> st
     text_ext = {".txt", ".md", ".csv", ".json", ".yaml", ".yml", ".log", ".py", ".sql"}
     if p.suffix.lower() not in text_ext:
         raise ValueError(f"不支持按文本读取该类型：{p.suffix}")
-    content = p.read_text(encoding="utf-8", errors="ignore")
+    try:
+        content = p.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise ValueError(f"文本文件不是有效 UTF-8 编码：{p}") from exc
     if max_chars > 0:
         content = content[:max_chars]
     return content
@@ -92,4 +95,3 @@ def load_table_file(
         sheet_name: Any = sheet.strip() if sheet else 0
         return pd.read_excel(p, sheet_name=sheet_name, nrows=max_rows)
     raise ValueError(f"不支持按表格读取该类型：{ext}")
-

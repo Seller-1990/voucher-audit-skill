@@ -1,0 +1,176 @@
+checks:
+  - id: INC_CUSTOMER_CONSISTENCY
+    name: "客户归属一致性检查"
+    type: customer_consistency_check
+    scope: income_cost
+    severity: "错误"
+    description: "检查客户归属信息是否正确、一致，包含5项子检查：①实际客户与映射表不一致（错误）；②账载客户对应多实际客户（错误）；③客户归属组合与上月主映射漂移（错误）；④实际客户对应多主体（需确认）；⑤项目管理中心客户多部门（需确认）。"
+    source:
+      doc: "（一致性校验）"
+      clause: "客户归属一致性"
+    params:
+      # 子检查1：映射不一致
+      mapping_check_enabled: true
+      # 子检查2：账载客户对应多实际客户
+      book_customer_multi_actual_enabled: true
+      book_customer_multi_actual_group_fields: ["主体账簿", "月", "三级科目", "账载客户", "项目"]
+      book_customer_multi_actual_distinct_field: "实际客户"
+      book_customer_multi_actual_min_distinct: 2
+      book_customer_multi_actual_min_gross_revenue: 10000
+      # 子检查3：客户归属组合漂移
+      combo_drift_enabled: true
+      combo_drift_key_fields: ["主体账簿", "账载客户"]
+      combo_drift_value_fields: ["三级科目", "实际客户", "部门", "项目"]
+      combo_drift_amount_field: "净额收入"
+      combo_drift_min_amount_abs: 50000
+      # 子检查4：实际客户对应多主体
+      actual_customer_multi_entity_enabled: true
+      actual_customer_multi_entity_group_fields: ["月", "实际客户", "账载客户", "项目"]
+      actual_customer_multi_entity_distinct_field: "主体账簿"
+      actual_customer_multi_entity_min_distinct: 2
+      actual_customer_multi_entity_min_gross_revenue: 50000
+      # 子检查5：项目管理中心客户多部门
+      pm_center_multi_dept_enabled: true
+      pm_center_multi_dept_group_fields: ["主体账簿", "月", "三级科目", "账载客户", "实际客户", "项目"]
+      pm_center_multi_dept_distinct_field: "部门"
+      pm_center_multi_dept_min_distinct: 2
+      pm_center_multi_dept_filter_field: "部门"
+      pm_center_multi_dept_trigger_keywords: ["项目管理中心", "战略渠道发展中心"]
+      pm_center_multi_dept_min_gross_revenue: 10000
+
+  - id: INC_REV_COST_ZERO_MISMATCH
+    name: "收入/成本零值不匹配（限定业务类型）"
+    type: rev_cost_zero_mismatch
+    scope: income_cost
+    severity: "错误"
+    description: "仅对业务类型（三级科目）包含：劳务派遣/外包/加工业务/加工劳务/人事代理 的组合，检查是否出现：净额收入=0但成本合计≠0，或成本合计=0但净额收入≠0。"
+    source:
+      doc: "（一致性校验）"
+      clause: "收入/成本同向性"
+    params:
+      key_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门", "项目"]
+      revenue_field: "净额收入"
+      cost_field: "成本合计"
+      eps: 1e-6
+      biz_type_field: "三级科目"
+      biz_type_keywords: ["劳务派遣", "外包", "加工业务", "加工劳务", "人事代理"]
+      biz_type_strip_percent_suffix: true
+
+
+  - id: AUX_HEADCOUNT_DATA_CHECK
+    name: "人次数据检查"
+    type: headcount_data_check
+    scope: aux_ledger
+    severity: "错误"
+    description: "摘要中出现 ZY 码、YS 码、或人次码 Z\"数字\"S\"数字\"（如 z50s20）。若人次码后缀出现文字或 '-' 等，视为人次数据填写错误（错误）。若出现人次码但符号不符合场景（冲销/红冲应写成 Z-50S-20，其它场景应写成 Z50S20），统一输出为需确认，需人工复核。"
+    source:
+      doc: "（人次数据）"
+      clause: "摘要人次码规范"
+    params:
+      summary_field: "摘要"
+      voucher_field: "凭证号"
+      month_field: "月"
+      zy_pattern: '(?i)Z\d+Y\d+'
+      ys_pattern: '(?i)Y\d+S\d+'
+      zs_pattern: '(?i)Z-?\d+S-?\d+'
+      red_flush_pattern: '(冲销|红冲|^冲)'
+      local_currency_field: "本币"
+      allowed_next_chars: ["", " ", "\\t", "，", ",", "。", ".", "；", ";", "：", ":", "、", "/", "\\\\", "|", ")", "）", "]", "】", "}"]
+
+
+
+  # C) 数值/阈值类
+  - id: INC_NEG_GM_HIGH_RATIO
+    name: "负毛利且占比过高"
+    type: neg_profit_ratio
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：同一（主体账簿+月+三级科目+实际客户）若项目毛利润<0 且 |毛利/全额收入|>=30%，且业务类型包含 劳务派遣/外包/加工劳务/人事代理，则提示核对。"
+    source:
+      doc: "（异常阈值）"
+      clause: "负毛利占比"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户"]
+      biz_type_field: "三级科目"
+      biz_type_keywords: ["劳务派遣", "外包", "加工劳务", "人事代理"]
+      dept_field: "部门"
+      exclude_dept_regex: '集团本部'
+      revenue_field: "全额收入"
+      profit_field: "项目毛利润"
+      ratio_abs_min: 0.3
+      min_revenue: 10000
+
+  - id: INC_OUTSOURCING_NO_WAGE_OR_HANGKAO
+    name: "外包缺工资或挂靠"
+    type: outsourcing_missing_cost
+    scope: income_cost
+    severity: "需确认"
+    description: "业务类型包含“外包”的组合下，如果成本合计与收入存在，但工资与第三方挂靠成本均为0，则提示核对。"
+    source:
+      doc: "（一致性校验）"
+      clause: "外包成本结构"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "账载客户", "实际客户", "部门", "项目"]
+      biz_type_field: "三级科目"
+      biz_type_keywords: ["外包"]
+      wage_field: "工资"
+      third_party_cost_field: "第三方挂靠成本"
+      cost_total_field: "成本合计"
+      revenue_field: "全额收入"
+      min_cost_abs: 1
+      min_revenue_abs: 1
+
+  # ③④⑤ 同比波动类
+  - id: INC_PP_CHANGE
+    name: "同比波动（合并）"
+    type: pp_change
+    scope: income_cost
+    severity: "需确认"
+    description: "以（主体账簿+实际客户+部门+项目）为主键，检查多项指标/金额/比率相对历史（所有之前月份均值）是否波动超过阈值。"
+    source:
+      doc: "（同比波动）"
+      clause: "指标/费用/比率稳定性"
+    params:
+      key_fields: ["主体账簿", "三级科目"]
+      month_field: "月"
+      items:
+        - name: "毛利率"
+          kind: ratio
+          numerator: "项目毛利润"
+          denominator: "净额收入"
+          tolerance_ratio: 0.3
+          eps: 1e-9
+          guard_field: "净额收入"
+          min_guard: 10000
+        - name: "单人毛利"
+          kind: ratio
+          numerator: "项目毛利润"
+          denominator: "结算人次"
+          tolerance_ratio: 0.3
+          eps: 1e-9
+          guard_field: "净额收入"
+          min_guard: 10000
+        - name: "项目返费"
+          kind: value
+          field: "项目返费"
+          tolerance_ratio: 0.3
+          min_abs: 10000
+          eps: 100
+        - name: "第三方挂靠成本"
+          kind: value
+          field: "第三方挂靠成本"
+          tolerance_ratio: 0.3
+          min_abs: 10000
+          eps: 100
+        - name: "项目返费/净额收入"
+          kind: ratio
+          numerator: "项目返费"
+          denominator: "净额收入"
+          tolerance_ratio: 0.5
+          eps: 0.01
+        - name: "第三方挂靠成本/全额收入"
+          kind: ratio
+          numerator: "第三方挂靠成本"
+          denominator: "全额收入"
+          tolerance_ratio: 0.5
+          eps: 0.01

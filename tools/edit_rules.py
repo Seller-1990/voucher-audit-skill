@@ -1,14 +1,10 @@
 #!/usr/bin/env python
 """AI 规则编辑器 - 理解自然语言描述，自动生成/修改审核规则"""
 
-import sys
 import argparse
-import json
 import yaml
-import re
 from pathlib import Path
 from typing import Dict, List, Any, Optional
-import os
 
 
 def load_rules(rules_path: Path) -> Dict[str, Any]:
@@ -23,6 +19,29 @@ def save_rules(rules: Dict[str, Any], rules_path: Path) -> None:
         yaml.safe_dump(rules, allow_unicode=True, sort_keys=False).replace("\r\n", "\n"),
         encoding="utf-8"
     )
+
+
+def load_batch_checks(batch_file: Path) -> List[Dict[str, Any]]:
+    """Load structured checks from a YAML/JSON batch file."""
+    data = yaml.safe_load(batch_file.read_text(encoding="utf-8"))
+    checks = data.get("checks", []) if isinstance(data, dict) else data
+    if not isinstance(checks, list) or not all(isinstance(item, dict) for item in checks):
+        raise ValueError("批量规则文件必须是规则对象列表，或包含 checks 列表")
+    return [dict(item) for item in checks]
+
+
+def merge_batch_checks(existing: List[Dict[str, Any]], incoming: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    existing_ids = {str(item.get("id", "")).strip() for item in existing}
+    merged = list(existing)
+    for check in incoming:
+        rule_id = str(check.get("id", "")).strip()
+        if not rule_id:
+            raise ValueError("批量规则缺少 id")
+        if rule_id in existing_ids:
+            raise ValueError(f"批量规则 ID 重复：{rule_id}")
+        existing_ids.add(rule_id)
+        merged.append(check)
+    return merged
 
 
 def detect_rule_type(description: str) -> Optional[str]:
@@ -85,7 +104,7 @@ def generate_rule_yaml(description: str, scope: str = "income_cost",
 def explain_rule_suggestion(rule: Dict[str, Any]) -> str:
     """解释规则建议"""
     lines = [
-        f"\n💡 规则建议:",
+        "\n💡 规则建议:",
         f"   ID: {rule['id']}",
         f"   名称: {rule['name']}",
         f"   类型: {rule['type']} ({rule['scope']})",
@@ -113,7 +132,7 @@ def interactive_rule_editor(description: str, existing_rules: List[Dict[str, Any
         # 检查是否与现有规则重复
         conflicts = check_rule_conflicts(new_rule, existing_rules)
         if conflicts:
-            print(f"\n⚠️  检测到可能的规则冲突:")
+            print("\n⚠️  检测到可能的规则冲突:")
             for conflict in conflicts:
                 print(f"   - {conflict}")
             print("\n正在调整规则...")
@@ -156,7 +175,7 @@ def interactive_rule_editor(description: str, existing_rules: List[Dict[str, Any
 
     else:
         # 无AI模式
-        print(f"📝 请输入规则配置:")
+        print("📝 请输入规则配置:")
         print("   需要的字段: id, name, type, scope, severity, description")
         print("\n输入完整YAML配置（空行结束）:")
 
@@ -225,20 +244,12 @@ def main():
     parser.add_argument("--output", "-o", help="输出文件路径（默认覆盖原文件）")
 
     args = parser.parse_args()
+    rules_path = Path(args.rules).resolve()
 
     # 批量模式
     if args.batch:
         print("📦 批量添加规则模式")
-
-        descriptions = []  # 初始化
         batch_file = Path(args.batch)
-        with open(batch_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.rstrip('\n\r')  # 去除所有换行符
-                if line.strip():
-                    descriptions.append(line)
-
-        print(f"检测到 {len(descriptions)} 条规则描述\n")
 
         # 确定输出路径
         if args.output:
@@ -249,14 +260,22 @@ def main():
             # 默认保存到 rules/audit_rules.yaml
             output_path = rules_path.parent / "audit_rules.yaml"
 
-        # 如果是纯描述文件，保存为新规则文件
-        if batch_file.suffix in [".txt", ".md"]:
+        if batch_file.suffix.lower() in [".yaml", ".yml", ".json"]:
+            rules = load_rules(rules_path)
+            incoming = load_batch_checks(batch_file)
+            rules["checks"] = merge_batch_checks(rules.get("checks", []), incoming)
+            save_rules(rules, output_path)
+            print(f"✅ 成功合并 {len(incoming)} 条结构化规则到: {output_path}")
+            return
+
+        descriptions = [line.strip() for line in batch_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+        print(f"检测到 {len(descriptions)} 条规则描述\n")
+        if batch_file.suffix.lower() in [".txt", ".md"]:
             rules_path = output_path
             rules = {"checks": []} if not rules_path.exists() else load_rules(rules_path)
             existing_checks = rules.get("checks", [])
         else:
-            rules = load_rules(rules_path)
-            existing_checks = rules.get("checks", [])
+            raise ValueError(f"不支持的批量文件类型：{batch_file.suffix}")
 
         added_count = 0
         for desc in descriptions:
@@ -274,7 +293,6 @@ def main():
 
     # 单条模式
     elif args.description:
-        rules_path = Path(args.rules).resolve()
         rules = load_rules(rules_path)
         existing_checks = rules.get("checks", [])
 

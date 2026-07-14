@@ -2,13 +2,20 @@ from __future__ import annotations
 
 import difflib
 import re
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import yaml
 
-from .task_models import RulePatchResult
+
+@dataclass(frozen=True)
+class RulePatchResult:
+    ok: bool
+    message: str
+    new_rules_path: Path | None
+    diff_text: str
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:

@@ -1,12 +1,11 @@
 #!/usr/bin/env python
 """规则可视化工具 - 生成规则统计图表"""
 
-import sys
 import argparse
 import json
 import yaml
 from pathlib import Path
-from typing import Dict, List, Any
+from typing import Dict, Any
 from collections import Counter
 
 
@@ -109,17 +108,17 @@ def visualize_rules(stats: Dict[str, Any]) -> str:
     lines.append("-" * 40)
 
     # 建议1：未触发规则
-    untriggered = 16 - len(stats["triggered_rules"])
+    untriggered = max(0, int(stats["total_rules"]) - len(stats["triggered_rules"]))
     if untriggered > 0:
         lines.append(f"  1. 有 {untriggered} 条规则未触发，建议检查阈值或业务规则")
     else:
-        lines.append(f"  1. 所有规则均有触发，覆盖率良好")
+        lines.append("  1. 所有规则均有触发，覆盖率良好")
 
     # 建议2：错误级别过高
     if stats["error_level"] > 5:
         lines.append(f"  2. 错误级别问题较多({stats['error_level']}条)，建议降级为'需确认'")
     elif stats["error_level"] == 0:
-        lines.append(f"  2. 无错误级别问题，建议保持")
+        lines.append("  2. 无错误级别问题，建议保持")
 
     lines.append("\n" + "="*60)
 
@@ -150,7 +149,7 @@ def export_chart_data(stats: Dict[str, Any], output_path: Path):
 
 def main():
     parser = argparse.ArgumentParser(description="凭证审核规则可视化工具")
-    parser.add_argument("--rules", default="rules/compiled_rules.yaml",
+    parser.add_argument("--rules", default="rules/audit_rules.yaml",
                         help="规则文件路径")
     parser.add_argument("--report", help="审核报告路径（可选，用于显示触发统计）")
     parser.add_argument("--chart-data", "-c", help="导出图表数据JSON文件（可选）")

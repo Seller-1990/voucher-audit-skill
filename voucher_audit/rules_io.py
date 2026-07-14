@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +26,41 @@ class ActiveRulesPointer:
     compiled_rules: Path
 
 
+DEFAULT_RULE_FILENAMES = ("app_rules.yaml", "audit_rules.yaml")
+
+
+def _has_default_rules(root: Path) -> bool:
+    rules_dir = root / "rules"
+    return all((rules_dir / filename).is_file() for filename in DEFAULT_RULE_FILENAMES)
+
+
+def _user_data_root() -> Path:
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData" / "Local"))
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    return base / "voucher-audit-skill"
+
+
+def ensure_rules_root(checkout_root: Path, *, user_data_root: Path | None = None) -> Path:
+    checkout_root = checkout_root.resolve()
+    if _has_default_rules(checkout_root):
+        return checkout_root
+
+    runtime_root = (user_data_root or _user_data_root()).resolve()
+    rules_dir = runtime_root / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    packaged_rules = resources.files("voucher_audit").joinpath("default_rules")
+    for filename in DEFAULT_RULE_FILENAMES:
+        target = rules_dir / filename
+        if not target.exists():
+            content = packaged_rules.joinpath(filename).read_text(encoding="utf-8")
+            target.write_text(content.replace("\r\n", "\n"), encoding="utf-8", newline="\n")
+    return runtime_root
+
+
 def repo_root_from_module() -> Path:
-    return Path(__file__).resolve().parent.parent
+    return ensure_rules_root(Path(__file__).resolve().parent.parent)
 
 
 def _read_yaml_obj(path: Path) -> dict[str, Any]:

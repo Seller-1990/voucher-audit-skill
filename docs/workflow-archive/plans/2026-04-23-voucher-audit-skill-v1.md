@@ -1,5 +1,7 @@
 # 凭证审核 Skill v1 Implementation Plan
 
+> 历史归档：本文记录 2026-04-23 的实施过程，其中的目录、命令和代码片段不代表当前项目状态。当前说明以根目录 `README.md` 为准。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在新目录 `voucher-audit-skill/` 交付一个可在任何 IDE/CLI 运行的凭证审核 Skill：
@@ -18,8 +20,8 @@
 
 ## 0. 路径
 
-- 新目录：`D:\OneDrive - PowerBI学谦\Software Development\工具软件\voucher-audit-skill`
-- 旧目录（仅用于提取，不做删除）：`D:\OneDrive - PowerBI学谦\Software Development\工具软件\凭证审核工具`
+- 新目录：`<voucher-audit-skill 项目目录>`
+- 旧目录（仅用于当时迁移）：`<历史项目目录>`
 
 ---
 
@@ -147,8 +149,8 @@ Expected: prints `ok`.
 
 Run:
 ```powershell
-$old = "D:\OneDrive - PowerBI学谦\Software Development\工具软件\凭证审核工具\src\voucher_audit"
-$new = "D:\OneDrive - PowerBI学谦\Software Development\工具软件\voucher-audit-skill\voucher_audit"
+$old = "<历史项目目录>\src\voucher_audit"
+$new = "<voucher-audit-skill 项目目录>\voucher_audit"
 
 New-Item -ItemType Directory -Force $new | Out-Null
 
