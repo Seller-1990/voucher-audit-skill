@@ -58,8 +58,23 @@ _INCOME_RULE_SPECS: dict[str, _RuleMatchSpec] = {
     ),
     "INC_REV_COST_ZERO_MISMATCH": _RuleMatchSpec(
         key_columns=("主体账簿", "三级科目", "实际客户", "部门", "项目"),
-        highlight_columns=("全额收入", "成本合计"),
+        # 当前规则默认核对净额收入；同时兼容历史全额收入列
+        highlight_columns=("净额收入", "全额收入", "成本合计"),
     ),
+    "INC_NEG_GM_HIGH_RATIO": _RuleMatchSpec(
+        key_columns=("主体账簿", "三级科目", "实际客户"),
+        highlight_columns=("全额收入", "项目毛利润"),
+    ),
+    "INC_OUTSOURCING_NO_WAGE_OR_HANGKAO": _RuleMatchSpec(
+        key_columns=("主体账簿", "三级科目", "账载客户", "实际客户", "部门", "项目"),
+        highlight_columns=("工资", "第三方挂靠成本", "成本合计", "全额收入"),
+    ),
+    # 当前合并规则
+    "INC_PP_CHANGE": _RuleMatchSpec(
+        key_columns=("主体账簿", "三级科目"),
+        highlight_columns=("项目毛利润", "净额收入", "结算人次", "项目返费", "第三方挂靠成本", "全额收入"),
+    ),
+    # 历史拆分规则 ID（旧报告回放兼容）
     "INC_METRIC_PP_CHANGE": _RuleMatchSpec(
         key_columns=("主体账簿", "实际客户", "部门"),
         highlight_columns=("项目毛利润", "净额收入", "结算人次"),

@@ -35,4 +35,4 @@ jobs:
       - name: Run tests with coverage
         run: coverage run --source=voucher_audit -m pytest -q
       - name: Enforce coverage floor
-        run: coverage report --fail-under=35
+        run: coverage report --fail-under=38

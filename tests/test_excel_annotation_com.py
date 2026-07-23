@@ -73,7 +73,11 @@ def test_annotation_failure_restores_backup(monkeypatch, tmp_path: Path) -> None
     monkeypatch.setattr(excel_annotation_com, "_load_com_modules", lambda: (_FakePythonCom(), _FakeWin32Client()))
     monkeypatch.setattr(excel_annotation_com, "ensure_no_open_workbook", lambda _path: None)
     monkeypatch.setattr(excel_annotation_com, "backup_file", lambda _path: backup_path)
-    monkeypatch.setattr(excel_annotation_com, "restore_from_backup", lambda path: restored.append(path))
+
+    def _restore(path, backup_path=None):  # noqa: ANN001
+        restored.append((path, backup_path))
+
+    monkeypatch.setattr(excel_annotation_com, "restore_from_backup", _restore)
     monkeypatch.setattr(
         excel_annotation_com,
         "_write_plan_to_sheet",
@@ -83,7 +87,7 @@ def test_annotation_failure_restores_backup(monkeypatch, tmp_path: Path) -> None
     with pytest.raises(RuntimeError, match="write failed"):
         excel_annotation_com.write_source_annotations(SourceAnnotationBundle(plans=(plan,)))
 
-    assert restored == [workbook_path]
+    assert restored == [(workbook_path, backup_path)]
 
 
 def test_annotation_success_removes_backup(monkeypatch, tmp_path: Path) -> None:
@@ -139,7 +143,7 @@ def test_annotation_reports_original_and_restore_errors(monkeypatch, tmp_path: P
     monkeypatch.setattr(
         excel_annotation_com,
         "restore_from_backup",
-        lambda _path: (_ for _ in ()).throw(OSError("restore failed")),
+        lambda _path, backup_path=None: (_ for _ in ()).throw(OSError("restore failed")),
     )
 
     with pytest.raises(RuntimeError, match="write failed.*restore failed"):
