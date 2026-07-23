@@ -1,64 +1,131 @@
 ---
 name: voucher-audit-skill
-description: Use when performing month-end voucher audit on Excel exports (data summary + income/cost), needing preview-before-run confirmation, optional source Excel annotation with a second confirmation, and a repair loop for missing file/sheet/column rule mismatches.
+description: Use when the user needs month-end voucher audit / 凭证审核 / 月末审核 on Excel exports (数据汇总 + 考核表输出), preview-before-run confirmation, optional source Excel annotation, inspect/repair for missing file-sheet-column mismatches, or cleanup of audit outputs.
 ---
 
 # Voucher Audit Skill
 
-## 应用场景
+月末凭证审核：读取工作目录中的 Excel 导出，按 YAML 规则做一致性/波动/格式检查，输出汇总报告；可选对源表做颜色标注与问题列回写。
 
-月末需要对凭证相关导出的 Excel 做一致性/波动性/格式性审核，并产出可回传的汇总报告（xlsx），必要时对源表进行颜色标注与“问题说明列”回写。
+**核心约束（不可跳过）**
 
-该 skill 的核心约束：
+1. **先预览再执行**：必须先 `preview` / `inspect`，把将执行的规则与输入结构展示给使用人。
+2. **源文件标注二次确认**：标注会改源 Excel；即使 `--yes` 也不能代替标注确认，必须 `--yes-annotate` 或交互确认。
+3. **修复闭环**：缺文件/缺 sheet/缺列时用 `repair` 生成补丁 → 预演 → 确认后版本化落盘。
 
-- **先预览再执行**：必须先列出“将执行的审核事项（表/字段/方法/输出）”，让使用人确认。
-- **源文件标注二次确认**：标注会修改源 Excel，必须额外确认。
-- **修复闭环**：如果规则与实际文件结构不匹配（缺文件/缺 sheet/缺列），可通过 `repair` 生成补丁、预演、确认后版本化落盘并切换 active。
+## Agent 工作流
+
+```text
+1. 确认 workdir（含 数据汇总.xlsx、考核表输出.xlsx）
+2. preview --show-inputs  +  inspect
+3. 向用户展示规则列表与输入匹配结果，请求确认
+4. run --yes --no-annotate   （默认先出报告、不改源文件）
+5. 若用户明确要求标注：run --yes --annotate --yes-annotate
+   （需 Windows + 桌面 Excel + pywin32，且源文件未被占用）
+6. 结构不匹配：repair → 展示 diff → 用户确认后 --yes 写入
+7. 仅清理本工具产物：cleanup --dry-run → cleanup --yes
+   （报告目录默认保留；确认后可加 --include-reports）
+```
+
+非交互场景（CI/脚本）必须显式带 `--yes`；需要标注时再加 `--yes-annotate`。
 
 ## 入口命令
 
-在本仓库根目录执行：
+在本仓库根目录（或已 `pip install -e .` 的环境）执行：
 
 ```powershell
+pip install -e .                 # 首次
+pip install -e ".[ai]"           # 可选 AI 复核
+pip install -e ".[dev]"          # 测试/Ruff
+
 python -m voucher_audit preview --workdir "D:\path\to\workdir" --show-inputs
-python -m voucher_audit run --workdir "D:\path\to\workdir"
-python -m voucher_audit run --workdir "D:\path\to\workdir" --no-annotate
+python -m voucher_audit inspect --workdir "D:\path\to\workdir"
+python -m voucher_audit run --workdir "D:\path\to\workdir" --yes --no-annotate
+python -m voucher_audit run --workdir "D:\path\to\workdir" --yes --annotate --yes-annotate
 python -m voucher_audit repair --workdir "D:\path\to\workdir"
 python -m voucher_audit rules show-active
+python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --dry-run
+python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --yes
+python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --yes --include-reports
 ```
+
+安装后也可使用 `voucher-audit` console script。
+
+常用 `run` 参数：
+
+| 参数 | 作用 |
+|---|---|
+| `--month N` | 指定目标月；默认从数据最大月推断 |
+| `--include-rule-id ID` | 只跑指定规则（可重复） |
+| `--enable-ai` | AI 复核（需 `openai` + `OPENAI_API_KEY`） |
+| `--annotate` / `--no-annotate` | 覆盖 `annotation_policy.enabled_default` |
+| `--yes` | 跳过审核事项确认 |
+| `--yes-annotate` | 跳过源文件修改二次确认 |
 
 ## 输入与输出
 
-**输入（workdir 目录）**
+**输入（workdir）**
 
 - `数据汇总.xlsx`
 - `考核表输出.xlsx`
 
-（文件名、sheet 名、列映射均可在 `rules/app_rules.yaml` 配置）
+文件名、sheet、列映射见 `rules/app_rules.yaml`。
 
 **输出**
 
-- `workdir/凭证审核输出/凭证审核报告_YYYYMM_时间戳.xlsx`
+- `<workdir>/凭证审核输出/凭证审核报告_YYYYMM_时间戳.xlsx`
+- 标注开启时：就地修改源工作簿（成功前会写旁路备份 `*.xlsx.bak`）
 
-## 执行流程（run）
+## 当前规则（6 条）
 
-1. `preview`：打印将执行的审核事项列表（规则ID、scope/type、涉及字段、输出页）。
-2. 确认1：确认无误后继续。
-3. 执行审核：按规则产出报告 xlsx。
-4. 若启用标注：确认2 后，通过 Excel COM 对源文件进行标注回写。
+`rules/audit_rules.yaml` 是审核规则唯一维护入口；`rules/compiled_rules.yaml` 为运行时产物，勿手改、勿提交。
 
-## 修复闭环（repair）
+| 规则 ID | 用途 |
+|---|---|
+| `INC_CUSTOMER_CONSISTENCY` | 客户归属一致性 |
+| `INC_REV_COST_ZERO_MISMATCH` | 收入/成本零值不匹配 |
+| `AUX_HEADCOUNT_DATA_CHECK` | 人次编码与符号 |
+| `INC_NEG_GM_HIGH_RATIO` | 负毛利占比过高 |
+| `INC_OUTSOURCING_NO_WAGE_OR_HANGKAO` | 外包成本结构缺失 |
+| `INC_PP_CHANGE` | 指标/金额/比率同比波动 |
 
-当 `run` 报错（常见为缺文件/缺 sheet/缺列）时：
-
-1. 运行 `repair`。
-2. 查看它生成的 `app_rules.diff` / `audit_rules.diff`。
-3. 预演通过后确认写入。
-4. 写入 `rules/versions/` 并更新 `rules/active_rules.json`，后续 `run` 会自动使用 active 版本。
+版本指针：`rules/versions/` + `rules/active_rules.json`（可选）。
 
 ## 规则维护
 
-- 新增/调整“审核规则”：编辑 `rules/audit_rules.yaml` 的 `checks`。
-- 新增/调整“应用规则”：编辑 `rules/app_rules.yaml`（files/sheets/columns/report_format/annotation_policy）。
+- 审核逻辑：编辑 `rules/audit_rules.yaml` 的 `checks`
+- 应用配置：编辑 `rules/app_rules.yaml`（files/sheets/columns/report_format/annotation_policy）
+- 手动切 active：`rules set-active`（危险；路径必须在仓库内）
 
-注意：源文件标注依赖 Windows + Excel + `pywin32`，且源文件不要被 Excel 打开占用。
+## 安全与禁止事项
+
+- **禁止**在未确认时对源 Excel 启用标注。
+- **禁止**对仓库外路径设置 active 规则指针。
+- `cleanup` 默认只删 `temp_*`；删除 `凭证审核输出` 必须加 `--include-reports`，且先 `--dry-run` 再 `--yes`。
+- 文本按严格 UTF-8 读取；标注前检测 `~$*.xlsx` 锁文件并以读写打开探测占用。
+
+## 常见失败
+
+| 现象 | 处理 |
+|---|---|
+| 缺文件/缺 sheet/缺列 | `inspect` 定位 → `repair` 预演 → 确认写入 |
+| AI 报缺 openai | `pip install -e ".[ai]"` 或去掉 `--enable-ai` |
+| 标注失败/只读 | 关闭 Excel 占用；确认已装 pywin32 与桌面 Excel |
+| 无 active 指针 | 默认使用 `rules/app_rules.yaml` + `rules/audit_rules.yaml` |
+
+## 验证
+
+```powershell
+pytest -q
+coverage run --source=voucher_audit -m pytest -q
+coverage report --fail-under=38
+ruff check voucher_audit tools tests
+python -m compileall -q voucher_audit tools tests
+```
+
+真实 COM 集成（默认跳过）：
+
+```powershell
+$env:VOUCHER_AUDIT_EXCEL_INTEGRATION = "1"
+pytest -q -m excel_com
+```

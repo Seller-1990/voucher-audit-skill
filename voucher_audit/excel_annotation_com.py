@@ -392,7 +392,7 @@ def write_source_annotations(bundle: SourceAnnotationBundle, logger: Optional[Lo
                     wb = None
                 if backup_path is not None:
                     try:
-                        restore_from_backup(workbook_path)
+                        restore_from_backup(workbook_path, backup_path=backup_path)
                         log.warn(f"源文件标注失败，已从备份恢复：{workbook_path.name}")
                     except Exception as restore_error:
                         raise RuntimeError(

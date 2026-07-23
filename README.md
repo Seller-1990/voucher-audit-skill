@@ -96,11 +96,15 @@ python -m tools.analyze_audit report.xlsx --format json
 
 ## 安全清理
 
-清理命令只处理指定工作目录内由本工具生成的目录。默认不会删除，必须先预览并显式确认：
+清理命令只处理指定工作目录内由本工具生成的目录。默认不会删除，必须先预览并显式确认。
+
+- 默认只清理 `temp_*` 调试目录
+- `凭证审核输出`（审核报告）需额外 `--include-reports`
 
 ```powershell
 python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --dry-run
 python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --yes
+python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --yes --include-reports
 ```
 
 ## 测试
@@ -108,7 +112,7 @@ python -m voucher_audit cleanup --workdir "D:\path\to\workdir" --yes
 ```powershell
 pytest -q
 coverage run --source=voucher_audit -m pytest -q
-coverage report --fail-under=35
+coverage report --fail-under=38
 ruff check voucher_audit tools tests
 python -m compileall -q voucher_audit tools tests
 ```

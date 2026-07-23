@@ -1,17 +1,14 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 import tempfile
-from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Sequence, TypedDict
+from typing import Any, Sequence
 
-
-from .cleanup import cleanup_targets, delete_cleanup_targets
+from .cleanup import classify_cleanup_target, cleanup_targets, delete_cleanup_targets
 from .logging_util import make_logger
-from .preview import build_preview_items
+from .preview import PreviewItem, build_preview_items
 from .repair import suggest_repair
 from .rules_io import (
     compile_rules,
@@ -23,20 +20,7 @@ from .rules_io import (
     repo_root_from_module,
 )
 from .runner import load_audit_context, run_audit
-from .versioning import update_active_pointer, write_version_snapshot
-
-
-
-
-class PreviewItem(TypedDict):
-    """预览项类型"""
-    rule_name: str
-    rule_id: str
-    severity: str
-    scope: str
-    rule_type: str
-    fields: tuple[str, ...]
-    output_logical_sheet: str
+from .versioning import VersionedRules, update_active_pointer, write_version_snapshot
 
 
 def _prompt_yes_no(question: str, *, default_no: bool = True) -> bool:
@@ -52,20 +36,20 @@ def _prompt_yes_no(question: str, *, default_no: bool = True) -> bool:
         print("请输入 y/yes 或 n/no。", file=sys.stderr)
 
 
-def _format_preview_table(items: List[PreviewItem]) -> str:
+def _format_preview_table(items: Sequence[PreviewItem]) -> str:
     """格式化预览表格"""
     cols = ["规则名称", "规则ID", "严重度", "Scope", "Type", "字段", "输出页"]
-    rows: List[List[str]] = []
+    rows: list[list[str]] = []
     for it in items:
         rows.append(
             [
-                str(getattr(it, "rule_name", "")),
-                str(getattr(it, "rule_id", "")),
-                str(getattr(it, "severity", "")),
-                str(getattr(it, "scope", "")),
-                str(getattr(it, "rule_type", "")),
-                "，".join(getattr(it, "fields", ()) or ()),
-                str(getattr(it, "output_logical_sheet", "")),
+                str(it.rule_name),
+                str(it.rule_id),
+                str(it.severity),
+                str(it.scope),
+                str(it.rule_type),
+                "，".join(it.fields or ()),
+                str(it.output_logical_sheet),
             ]
         )
 
@@ -306,19 +290,18 @@ def cmd_rules_show_active(_args: argparse.Namespace) -> int:
 
 
 def cmd_rules_set_active(args: argparse.Namespace) -> int:
-    repo_root = repo_root_from_module()
+    repo_root = repo_root_from_module().resolve()
 
-    app = Path(args.app).resolve()
-    audit = Path(args.audit).resolve()
-    compiled = Path(args.compiled).resolve()
-    for p in [app, audit, compiled]:
+    paths = [Path(args.app).resolve(), Path(args.audit).resolve(), Path(args.compiled).resolve()]
+    for p in paths:
         if not p.exists():
             print(f"文件不存在：{p}", file=sys.stderr)
             return 2
-
-    rel_app = str(app.relative_to(repo_root)) if str(app).startswith(str(repo_root)) else str(app)
-    rel_audit = str(audit.relative_to(repo_root)) if str(audit).startswith(str(repo_root)) else str(audit)
-    rel_compiled = str(compiled.relative_to(repo_root)) if str(compiled).startswith(str(repo_root)) else str(compiled)
+        try:
+            p.relative_to(repo_root)
+        except ValueError:
+            print(f"规则路径必须位于仓库内：{p}", file=sys.stderr)
+            return 2
 
     if not args.yes:
         ok = _prompt_yes_no("将直接更新 active_rules.json（不校验内容正确性）。继续吗？", default_no=True)
@@ -326,41 +309,58 @@ def cmd_rules_set_active(args: argparse.Namespace) -> int:
             print("已取消。")
             return 2
 
-    p = (repo_root / "rules" / "active_rules.json").resolve()
-    data = {
-        "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "active": {
-            "app_rules": rel_app,
-            "audit_rules": rel_audit,
-            "compiled_rules": rel_compiled,
-        },
-    }
-    p.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n")
-    print(f"已更新：{p}")
+    snap = VersionedRules(
+        app_rules_path=paths[0],
+        audit_rules_path=paths[1],
+        compiled_rules_path=paths[2],
+    )
+    pointer_path = update_active_pointer(repo_root, snap)
+    print(f"已更新：{pointer_path}")
     return 0
 
 
 def cmd_cleanup(args: argparse.Namespace) -> int:
     """清理指定工作目录内由本工具生成的目录。"""
+    include_reports = bool(getattr(args, "include_reports", False))
     try:
-        targets = cleanup_targets(Path(args.workdir))
+        targets = cleanup_targets(Path(args.workdir), include_reports=include_reports)
     except ValueError as exc:
         print(str(exc), file=sys.stderr)
         return 2
+
+    report_dir = Path(args.workdir).resolve() / "凭证审核输出"
+    if not include_reports and report_dir.exists():
+        print(
+            f"提示：检测到报告目录未纳入清理：{report_dir}（如需删除请加 --include-reports）",
+            file=sys.stderr,
+        )
+
     if not targets:
         print("没有需要清理的文件或目录。")
         return 0
+
+    def _label(target: Path) -> str:
+        kind = classify_cleanup_target(target)
+        tag = {"report": "报告输出", "temp": "临时目录"}.get(kind, "其他")
+        return f"[{tag}] {target}"
+
     if args.dry_run:
         for target in targets:
-            print(f"[DRY-RUN] 将删除: {target}")
+            print(f"[DRY-RUN] 将删除: {_label(target)}")
         print(f"\n[DRY-RUN] 以下项目将被删除: {len(targets)} 项")
         return 0
     if not args.yes:
-        print("清理会永久删除以上目录。请先使用 --dry-run 检查，并显式传入 --yes。", file=sys.stderr)
+        for target in targets:
+            print(f"将删除: {_label(target)}", file=sys.stderr)
+        print(
+            "清理会永久删除以上目录。请先使用 --dry-run 检查，并显式传入 --yes。"
+            + ("（已包含报告输出）" if include_reports else ""),
+            file=sys.stderr,
+        )
         return 2
     result = delete_cleanup_targets(targets)
     for target in result.deleted:
-        print(f"已删除: {target}")
+        print(f"已删除: {_label(target)}")
     for target, error in result.failed:
         print(f"删除失败 {target}: {error}", file=sys.stderr)
     if result.failed:
@@ -404,9 +404,14 @@ def build_parser() -> argparse.ArgumentParser:
     sx.add_argument("--yes", action="store_true", help="跳过交互确认（仍建议谨慎使用）")
     sx.set_defaults(func=cmd_repair)
 
-    sc = sub.add_parser("cleanup", help="清理临时文件和工作目录")
+    sc = sub.add_parser("cleanup", help="清理临时目录；报告输出需 --include-reports")
     sc.add_argument("--workdir", default=".", help="只清理该目录内由本工具生成的目录")
     sc.add_argument("--dry-run", action="store_true", help="仅列出要删除的文件，不实际删除")
+    sc.add_argument(
+        "--include-reports",
+        action="store_true",
+        help="同时删除 凭证审核输出（审核报告目录，默认不删）",
+    )
     sc.add_argument("--yes", action="store_true", help="确认永久删除列出的目录")
     sc.set_defaults(func=cmd_cleanup)
 
