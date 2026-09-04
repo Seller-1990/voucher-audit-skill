@@ -341,17 +341,54 @@ def _sub_mapping_check(
     )
     ref = ranked.groupby(key_cols, dropna=False).head(1).rename(columns={"实际客户": "实际客户_映射"})
 
+    # 当月映射：用于区分“映射已变更”与“真实不一致”
+    cur_map = map_df[map_df["月"].notna() & (map_df["月"].astype("Int64") == int(target_month))]
+    cur_ref = pd.DataFrame(columns=key_cols + ["实际客户_当月映射"])
+    if not cur_map.empty:
+        cur_ranked = (
+            cur_map.groupby(key_cols + ["实际客户"], dropna=False)
+            .agg(cnt=("实际客户", "size"))
+            .reset_index()
+            .sort_values(by=["cnt"], ascending=False)
+        )
+        cur_ref = cur_ranked.groupby(key_cols, dropna=False).head(1).rename(
+            columns={"实际客户": "实际客户_当月映射"}
+        )
+
     merged = cur.merge(ref[key_cols + ["实际客户_映射"]], how="left", on=key_cols)
+    merged = merged.merge(cur_ref[key_cols + ["实际客户_当月映射"]], how="left", on=key_cols)
     mism = merged[(merged["实际客户_映射"].notna()) & (merged["实际客户"] != merged["实际客户_映射"])].copy()
     if mism.empty:
         return pd.DataFrame()
 
-    mism = mism.drop(columns=["实际客户_映射"], errors="ignore")
+    def _fmt(v: Any) -> str:
+        s = "" if v is None else str(v).strip()
+        return s if s and s.lower() != "nan" else "（空）"
+
+    # ① 与历史映射不一致，但与当月映射一致 → 映射变更，需确认变更依据
+    # ② 与历史映射、当月映射均不一致（或当月无映射）→ 真实不一致，错误
+    matches_cur_map = mism["实际客户_当月映射"].notna() & (mism["实际客户"] == mism["实际客户_当月映射"])
+
+    def _reason(row: pd.Series) -> str:
+        hist_v = _fmt(row.get("实际客户_映射"))
+        cur_v = _fmt(row.get("实际客户_当月映射"))
+        if bool(row.get("__matches_cur_map", False)):
+            return (
+                f"实际客户与历史映射不一致（历史映射：{hist_v}），与当月映射一致（当月：{cur_v}）"
+                "——请确认映射变更依据"
+            )
+        return f"实际客户与映射表不一致（历史映射：{hist_v}；当月映射：{cur_v}）"
+
+    mism["__matches_cur_map"] = matches_cur_map
+    mism["命中原因"] = mism.apply(_reason, axis=1)
+    mism["严重度"] = mism["__matches_cur_map"].map(lambda m: "需确认" if m else "错误")
+    mism = mism.drop(columns=["实际客户_映射", "实际客户_当月映射", "__matches_cur_map"], errors="ignore")
     mism.insert(0, "问题分类", "实际客户与映射表不一致")
-    mism.insert(0, "命中原因", "实际客户与映射表不一致")
+    mism.insert(1, "命中原因", mism.pop("命中原因"))
+    mism.insert(1, "严重度", mism.pop("严重度"))
     mism.insert(0, "规则描述", str(rule.get("description", "")))
     mism.insert(0, "制度来源", source_str)
     mism.insert(0, "规则名称", rule_name)
     mism.insert(0, "规则ID", rule_id)
-    mism.insert(0, "严重度", "错误")
+    mism.insert(0, "严重度", mism.pop("严重度"))
     return mism

@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from .check_utils import _src_rows_text
+
 
 def build_rev_cost_zero_mismatch_sheet(
     df_income: Optional[pd.DataFrame],
@@ -82,6 +84,15 @@ def build_rev_cost_zero_mismatch_sheet(
         .reset_index()
     )
 
+    # 源行号回溯（Excel 实际行号）
+    if "_src_row" in df.columns:
+        src_map = (
+            df.groupby(key_fields, dropna=False)["_src_row"]
+            .apply(_src_rows_text)
+            .reset_index(name="源行号")
+        )
+        g = g.merge(src_map, how="left", on=key_fields)
+
     month_col = "月"
 
     def _norm_key(v: Any) -> str:
@@ -133,6 +144,7 @@ def build_rev_cost_zero_mismatch_sheet(
         hit_reason = str(h.get("命中原因", ""))
         rec["标注"] = "问题"
         rec["命中原因"] = hit_reason
+        rec["源行号"] = str(series_row.get("源行号", "")) if series_row is not None and "源行号" in g.columns else ""
 
         # 指标：展示“非零的那一侧”，便于快速判断
         rev_val = pd.to_numeric(rec.get(revenue_field, rec.get("净额收入")), errors="coerce")
@@ -154,7 +166,7 @@ def build_rev_cost_zero_mismatch_sheet(
 
     out = pd.DataFrame(out_rows)
     final_cols = [c for c in key_fields if c != month_col] + [month_col] if month_col in key_fields else key_fields
-    final_cols = final_cols + list(cols_map.keys()) + ["标注", "命中原因", "指标名称", "指标值", "严重度"]
+    final_cols = final_cols + list(cols_map.keys()) + ["源行号", "标注", "命中原因", "指标名称", "指标值", "严重度"]
     for c in final_cols:
         if c not in out.columns:
             out[c] = ""
@@ -201,6 +213,18 @@ def build_outsourcing_missing_cost_sheet(
         "历史第三方挂靠成本_max": "历史第三方挂靠成本_max",
     }
 
+    # 源行号回溯：命中行是聚合组，从源表按组键取回实际行号列表
+    src_cols = [c for c in group_fields if c in df_income.columns]
+    if "_src_row" in df_income.columns and src_cols:
+        src_map = (
+            df_income.groupby(src_cols, dropna=False)["_src_row"]
+            .apply(_src_rows_text)
+            .reset_index(name="源行号")
+        )
+        hits = hits.merge(src_map, how="left", on=src_cols)
+    else:
+        hits["源行号"] = ""
+
     month_col = "月"
 
     def _norm_key(v: Any) -> str:
@@ -236,6 +260,7 @@ def build_outsourcing_missing_cost_sheet(
         hit_reason = str(h.get("命中原因", ""))
         rec["标注"] = "问题"
         rec["命中原因"] = hit_reason
+        rec["源行号"] = str(h.get("源行号", "") or "")
         if "历史第三方挂靠成本" in hit_reason:
             rec["指标名称"] = "历史第三方挂靠成本_max"
             rec["指标值"] = pd.to_numeric(h.get("历史第三方挂靠成本_max"), errors="coerce")
@@ -251,7 +276,7 @@ def build_outsourcing_missing_cost_sheet(
 
     out = pd.DataFrame(out_rows)
     final_cols = [c for c in group_fields if c != month_col] + [month_col] if month_col in group_fields else group_fields
-    final_cols = final_cols + list(cols_map.keys()) + ["标注", "命中原因", "指标名称", "指标值", "严重度"]
+    final_cols = final_cols + list(cols_map.keys()) + ["源行号", "标注", "命中原因", "指标名称", "指标值", "严重度"]
     for c in final_cols:
         if c not in out.columns:
             out[c] = ""

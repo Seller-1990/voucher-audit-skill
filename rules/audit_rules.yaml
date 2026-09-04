@@ -4,7 +4,7 @@ checks:
     type: customer_consistency_check
     scope: income_cost
     severity: "错误"
-    description: "检查客户归属信息是否正确、一致，包含5项子检查：①实际客户与映射表不一致（错误）；②账载客户对应多实际客户（错误）；③客户归属组合与上月主映射漂移（错误）；④实际客户对应多主体（需确认）；⑤项目管理中心客户多部门（需确认）。"
+    description: "检查客户归属信息是否正确、一致，包含3项子检查：①实际客户与映射表不一致（错误/需确认）；②账载客户对应多实际客户（错误）；③客户归属组合与上月主映射漂移（错误）。注：④实际客户对应多主体、⑤项目管理中心客户多部门 属正常业务场景，经 2026-09 复核确认为非问题，默认关闭。"
     source:
       doc: "（一致性校验）"
       clause: "客户归属一致性"
@@ -23,14 +23,14 @@ checks:
       combo_drift_value_fields: ["三级科目", "实际客户", "部门", "项目"]
       combo_drift_amount_field: "净额收入"
       combo_drift_min_amount_abs: 50000
-      # 子检查4：实际客户对应多主体
-      actual_customer_multi_entity_enabled: true
+      # 子检查4：实际客户对应多主体（正常业务，默认关闭——2026-09 业务确认）
+      actual_customer_multi_entity_enabled: false
       actual_customer_multi_entity_group_fields: ["月", "实际客户", "账载客户", "项目"]
       actual_customer_multi_entity_distinct_field: "主体账簿"
       actual_customer_multi_entity_min_distinct: 2
       actual_customer_multi_entity_min_gross_revenue: 50000
-      # 子检查5：项目管理中心客户多部门
-      pm_center_multi_dept_enabled: true
+      # 子检查5：项目管理中心客户多部门（正常业务，默认关闭——2026-09 业务确认）
+      pm_center_multi_dept_enabled: false
       pm_center_multi_dept_group_fields: ["主体账簿", "月", "三级科目", "账载客户", "实际客户", "项目"]
       pm_center_multi_dept_distinct_field: "部门"
       pm_center_multi_dept_min_distinct: 2
@@ -174,3 +174,213 @@ checks:
           denominator: "全额收入"
           tolerance_ratio: 0.5
           eps: 0.01
+
+  # ⑥ 环比波动（vs 上月，与同比波动互补）
+  - id: INC_MOM_CHANGE
+    name: "和上个月比波动较大"
+    type: mom_change
+    scope: income_cost
+    severity: "需确认"
+    description: "以（主体账簿+三级科目+实际客户+部门）为主键，与上月对比：收入/成本变动超过100%，或毛利率变动超过30个百分点，提示核对业务或记账口径。"
+    source:
+      doc: "（同比波动）"
+      clause: "环比稳定性"
+    params:
+      group_fields: ["主体账簿", "三级科目", "实际客户", "部门"]
+      revenue_field: "全额收入"
+      cost_field: "成本合计"
+      profit_field: "项目毛利润"
+      revenue_threshold: 1.0
+      cost_threshold: 1.0
+      gm_threshold: 0.3
+
+  # ⑦ 高毛利率（疑似少入成本）
+  - id: INC_GM_HIGH_RATIO
+    name: "毛利偏高，可能漏记了成本"
+    type: gm_high_ratio
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：同一（主体账簿+月+三级科目+实际客户）若毛利率>50%，提示核对是否少入成本/漏记成本。"
+    source:
+      doc: "（异常阈值）"
+      clause: "高毛利率"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户"]
+      revenue_field: "全额收入"
+      net_revenue_field: "净额收入"
+      profit_field: "项目毛利润"
+      threshold: 0.5
+      min_revenue: 10000
+
+  # ⑧ 收入成本倒挂（收入<成本且均非零）
+  - id: INC_REV_COST_INVERSION
+    name: "花的钱比挣的多（收入低于成本）"
+    type: rev_cost_inversion
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：同一组合全额收入与成本合计均为非零，且收入<成本，提示核对错记或错期。"
+    source:
+      doc: "（一致性校验）"
+      clause: "收入成本倒挂"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门", "项目"]
+      revenue_field: "全额收入"
+      cost_field: "成本合计"
+
+  # ⑨ 结算人次与收入背离
+  - id: INC_HEADCOUNT_REV_MISMATCH
+    name: "结算人数和收入对不上"
+    type: headcount_rev_mismatch
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：结算人次>0但净额收入=0，或净额收入>1000但结算人次=0，提示核对结算单。"
+    source:
+      doc: "（一致性校验）"
+      clause: "人次与收入配比"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门"]
+      revenue_field: "净额收入"
+      headcount_field: "结算人次"
+      income_min: 1000
+
+  # ⑩ 社保人数异常
+  - id: INC_SOCIAL_HEADCOUNT_MISMATCH
+    name: "报了社保人数却没交社保费"
+    type: social_headcount_mismatch
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：社保人数>0但净额收入=0，或社保人数>0但社保费=0（疑似漏计社保成本）。"
+    source:
+      doc: "（一致性校验）"
+      clause: "社保人数与费用"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门"]
+      revenue_field: "净额收入"
+      social_people_field: "社保人数"
+      social_fee_field: "社保"
+
+  # ⑪ 返费/挂靠占收入比例过高
+  - id: INC_COST_RATIO_HIGH
+    name: "返费或挂靠费占收入比例过高"
+    type: cost_ratio_high
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：项目返费占全额收入>50%，或第三方挂靠成本占全额收入>30%，提示核对科目与金额。"
+    source:
+      doc: "（异常阈值）"
+      clause: "返费挂靠占比"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门"]
+      revenue_field: "全额收入"
+      ratios:
+        - {field: "项目返费", threshold: 0.5}
+        - {field: "第三方挂靠成本", threshold: 0.3}
+
+  # ⑫ 费用占比异常
+  - id: INC_EXPENSE_RATIO
+    name: "福利费或其他费用占比偏高"
+    type: expense_ratio
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：项目福利费占全额收入>3%或绝对值>5万，项目其他费用占全额收入>10%，提示核对科目错记。"
+    source:
+      doc: "（异常阈值）"
+      clause: "费用占比"
+    params:
+      group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门"]
+      revenue_field: "全额收入"
+      welfare_field: "项目福利费"
+      other_field: "项目其他费用"
+      welfare_ratio: 0.03
+      welfare_abs: 50000
+      other_ratio: 0.10
+
+  # ⑬ 成本项目突然出现
+  - id: INC_COST_SUDDEN_APPEARANCE
+    name: "以前没有的费用本月突然出现"
+    type: cost_sudden_appearance
+    scope: income_cost
+    severity: "需确认"
+    description: "除去部门=集团本部：项目福利费/项目其他费用/第三方挂靠成本 历史各月均为0，本月突增超1万，提示核对是否错记科目。"
+    source:
+      doc: "（异常阈值）"
+      clause: "成本突然出现"
+    params:
+      group_fields: ["主体账簿", "三级科目", "实际客户", "部门", "项目"]
+      fields: ["项目福利费", "项目其他费用", "第三方挂靠成本"]
+      threshold: 10000
+
+  # ⑭ 收入成本表重复行（登记表序14）
+  - id: INC_DUPLICATE_ROW
+    name: "收入成本表里有重复行"
+    type: duplicate_row
+    scope: income_cost
+    severity: "错误"
+    description: "同一（主体账簿+月+内外+三级科目+账载客户+实际客户+部门+项目）下出现金额完全相同的行，疑似重复录入。"
+    source:
+      doc: "（登记表）"
+      clause: "重复行"
+    params:
+      key_fields: ["主体账簿", "月", "内外", "三级科目", "账载客户", "实际客户", "部门", "项目"]
+      amount_fields: ["全额收入", "成本合计", "净额收入", "项目毛利润"]
+      min_amount: 1
+
+  # ⑮ 集团本部暂估成本未调整完（登记表序21/22/23/28）
+  - id: INC_GROUP_HQ_UNSETTLED
+    name: "集团本部还挂着没调整的成本"
+    type: group_hq_unsettled
+    scope: income_cost
+    severity: "错误"
+    description: "集团本部行按主体+科目+客户归总后仍有大额余额（暂估成本可能没冲完/没调整到实际部门），提示核对账外调整。"
+    source:
+      doc: "（登记表）"
+      clause: "集团本部暂估未调整"
+    params:
+      hq_dept_value: "集团本部"
+      group_fields: ["主体账簿", "三级科目", "实际客户"]
+      amount_field: "成本合计"
+      min_abs: 10000
+
+  # ⑯ 疑似客商改名（登记表序34）
+  - id: INC_SIMILAR_CUSTOMER_RENAME
+    name: "疑似客商改名"
+    type: similar_customer_rename
+    scope: income_cost
+    severity: "需确认"
+    description: "历史月有、本月消失的客户，与本月新出现且名字相似（公共字符≥4）的客户配对，提示可能是改名——账上直接改客商名称，不要新增客商。"
+    source:
+      doc: "（登记表）"
+      clause: "客商更名"
+    params:
+      min_common_chars: 4
+
+  # ⑰ 序时账工资/社保行客户挂错（登记表序6）
+  - id: AUX_WAGE_WRONG_CUSTOMER
+    name: "工资好像挂错了客户（序时账）"
+    type: aux_wage_wrong_customer
+    scope: aux_ledger
+    severity: "错误"
+    description: "调整后序时账中工资/社保/公积金/劳务费行的实际客户与客户调整校验映射表（历史月主映射）不一致，疑似工资挂错客户。"
+    source:
+      doc: "（登记表）"
+      clause: "辅助项挂错"
+    params:
+      summary_field: "摘要"
+      wage_keywords: ["工资", "社保", "公积金", "劳务费"]
+      min_amount: 1
+
+  # ⑱ 同一客户混合业务类型（登记表序9）
+  - id: INC_MIXED_BIZ_TYPE
+    name: "同一个客户混着做多种业务"
+    type: mixed_biz_type
+    scope: income_cost
+    severity: "需确认"
+    description: "同一（主体账簿+月+账载客户）出现 2 种及以上业务类型（如外包+代理招聘），且收入≥1万，可能合同换签了但账上没同步。"
+    source:
+      doc: "（登记表）"
+      clause: "业务类型混做"
+    params:
+      group_fields: ["主体账簿", "月", "账载客户"]
+      biz_type_field: "三级科目"
+      amount_field: "全额收入"
+      min_gross_revenue: 10000

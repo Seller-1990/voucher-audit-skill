@@ -35,3 +35,12 @@ temp_debug_run/
 temp_debug_write/
 temp_test/
 temp_test_data/
+
+# 本地规划文件（planning-with-files）
+task_plan.md
+findings.md
+progress.md
+
+# 本地参考资料（含真实客户/员工信息，不公开）
+收入成本表1.py
+月度项目利润异常登记表.xlsx

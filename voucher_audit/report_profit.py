@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from .check_utils import _src_rows_text
+
 
 def build_neg_profit_ratio_sheet(
     df_income: Optional[pd.DataFrame],
@@ -80,6 +82,15 @@ def build_neg_profit_ratio_sheet(
         .reset_index()
     )
 
+    # 源行号回溯（Excel 实际行号）
+    if "_src_row" in df.columns:
+        src_map = (
+            df.groupby(group_fields, dropna=False)["_src_row"]
+            .apply(_src_rows_text)
+            .reset_index(name="源行号")
+        )
+        g = g.merge(src_map, how="left", on=group_fields)
+
     def _norm_key(v: Any) -> str:
         if v is None:
             return ""
@@ -138,6 +149,7 @@ def build_neg_profit_ratio_sheet(
         sev = str(h.get("严重度", ""))
         rec["标注"] = "问题"
         rec["命中原因"] = str(h.get("命中原因", ""))
+        rec["源行号"] = str(series_row.get("源行号", "")) if series_row is not None and "源行号" in g.columns else ""
         rec["指标名称"] = "毛利/净额收入"
 
         ratio_val = pd.to_numeric(h.get("毛利/净额收入"), errors="coerce")
@@ -155,7 +167,7 @@ def build_neg_profit_ratio_sheet(
 
     out = pd.DataFrame(out_rows)
     final_cols = [c for c in group_fields if c != month_col] + [month_col] if month_col in group_fields else group_fields
-    final_cols = final_cols + list(cols_map.keys()) + ["标注", "命中原因", "指标名称", "指标值", "严重度"]
+    final_cols = final_cols + list(cols_map.keys()) + ["源行号", "标注", "命中原因", "指标名称", "指标值", "严重度"]
     for c in final_cols:
         if c not in out.columns:
             out[c] = ""

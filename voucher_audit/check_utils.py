@@ -70,3 +70,14 @@ def _pick_prev_month(df: pd.DataFrame, month_col: str, target_month: int) -> Opt
     if prev.empty:
         return None
     return int(prev.max())
+
+
+def _src_rows_text(values: object, limit: int = 8) -> str:
+    """把一组源行号（Excel 实际行号）格式化为可读文本，超长截断。"""
+    s = pd.to_numeric(pd.Series(list(values) if not isinstance(values, pd.Series) else values), errors="coerce")
+    nums = sorted(int(x) for x in s.dropna().tolist())
+    if not nums:
+        return ""
+    shown = [str(x) for x in nums[:limit]]
+    suffix = f"…共{len(nums)}行" if len(nums) > limit else ""
+    return "、".join(shown) + suffix

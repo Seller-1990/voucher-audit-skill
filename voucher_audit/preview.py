@@ -139,6 +139,40 @@ def _fields_from_rule(rule: dict[str, Any]) -> list[str]:
         add(params.get("revenue_field"))
         add(params.get("cost_field"))
         add(params.get("profit_field"))
+    elif rtype in {"gm_high_ratio", "neg_profit_ratio"}:
+        add(params.get("group_fields"))
+        add(params.get("revenue_field"))
+        add(params.get("net_revenue_field"))
+        add(params.get("profit_field"))
+    elif rtype in {"rev_cost_inversion", "rev_cost_zero_mismatch"}:
+        add(params.get("group_fields", params.get("key_fields")))
+        add(params.get("revenue_field"))
+        add(params.get("cost_field"))
+    elif rtype in {"headcount_rev_mismatch", "social_headcount_mismatch"}:
+        add(params.get("group_fields"))
+        add(params.get("revenue_field"))
+        add(params.get("headcount_field"))
+        add(params.get("social_people_field"))
+        add(params.get("social_fee_field"))
+    elif rtype == "cost_ratio_high":
+        add(params.get("group_fields"))
+        add(params.get("revenue_field"))
+        for r in (params.get("ratios") or []):
+            if isinstance(r, dict):
+                add(r.get("field"))
+    elif rtype == "expense_ratio":
+        add(params.get("group_fields"))
+        add(params.get("revenue_field"))
+        add(params.get("welfare_field"))
+        add(params.get("other_field"))
+    elif rtype == "cost_sudden_appearance":
+        add(params.get("group_fields"))
+        add(params.get("fields"))
+    elif rtype == "mom_change":
+        add(params.get("group_fields"))
+        add(params.get("revenue_field"))
+        add(params.get("cost_field"))
+        add(params.get("profit_field"))
 
     return out
 

@@ -13,6 +13,167 @@ from .report_pp_change import build_pp_change_sheet
 from .report_comparison import build_comparison_report
 from .report_cost_checks import build_outsourcing_missing_cost_sheet, build_rev_cost_zero_mismatch_sheet
 from .report_profit import build_neg_profit_ratio_sheet
+from .deep_analysis import (
+    build_correlation_index,
+    build_customer_profile_sheet,
+    build_fix_list_sheet,
+    build_rule_correlation_sheet,
+)
+from .registration import (
+    attach_registration_status,
+    export_registration_rows,
+    find_registration_file,
+    load_registration_table,
+)
+
+# 数值精度：金额 2 位小数；比率/占比类指标 4 位小数
+_RATIO_HINTS = ("率", "/", "占比", "ratio", "％", "%")
+
+
+def _round_for_output(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    indicator_names: dict[int, str] = {}
+    if "指标名称" in out.columns:
+        indicator_names = {i: str(v) for i, v in out["指标名称"].items()}
+
+    def _round_value(i: int, v: object, default_nd: int) -> object:
+        try:
+            f = float(v)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return v
+        if pd.isna(f):
+            return v
+        name = indicator_names.get(i, "")
+        nd = 4 if any(h in name.lower() for h in _RATIO_HINTS) else default_nd
+        return round(f, nd)
+
+    for col in out.columns:
+        if col == "指标值":
+            # 指标值列常为 object 混合类型，逐格转换取整
+            out[col] = [_round_value(i, v, 2) for i, v in enumerate(out[col])]
+        elif pd.api.types.is_float_dtype(out[col]):
+            out[col] = out[col].round(2)
+    return out
+
+
+def _sort_by_mark(df: pd.DataFrame) -> pd.DataFrame:
+    """有“标注”列的 sheet：问题行置顶、参考行靠后（组内保持原序）。"""
+    if df is None or df.empty or "标注" not in df.columns:
+        return df
+    rank = {"问题": 0, "错误": 0, "需确认": 0, "参考": 1}
+    key = df["标注"].map(rank).fillna(2)
+    return df.assign(__mark_rank=key).sort_index(kind="stable").sort_values(
+        by="__mark_rank", kind="stable"
+    ).drop(columns=["__mark_rank"])
+
+
+# 新增规则（收入成本表1.py + 登记表 整合）明细页规则ID集合
+_EXTRA_RULE_IDS = {
+    "INC_MOM_CHANGE",
+    "INC_GM_HIGH_RATIO",
+    "INC_REV_COST_INVERSION",
+    "INC_HEADCOUNT_REV_MISMATCH",
+    "INC_SOCIAL_HEADCOUNT_MISMATCH",
+    "INC_COST_RATIO_HIGH",
+    "INC_EXPENSE_RATIO",
+    "INC_COST_SUDDEN_APPEARANCE",
+    "INC_DUPLICATE_ROW",
+    "INC_GROUP_HQ_UNSETTLED",
+    "INC_SIMILAR_CUSTOMER_RENAME",
+    "AUX_WAGE_WRONG_CUSTOMER",
+    "INC_MIXED_BIZ_TYPE",
+}
+
+
+def build_extra_rules_sheet(
+    income_dim_anomalies: Optional[pd.DataFrame],
+    income_gm_anomalies: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """整合规则明细页：展示新增规则（高毛利率/倒挂/人次社保背离/占比/环比等）的命中明细。"""
+    parts: list[pd.DataFrame] = []
+    for df in (income_dim_anomalies, income_gm_anomalies):
+        if df is None or df.empty or "规则ID" not in df.columns:
+            continue
+        sub = df[df["规则ID"].astype(str).isin(_EXTRA_RULE_IDS)].copy()
+        if not sub.empty:
+            parts.append(sub)
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, ignore_index=True)
+    out = _strip_internal_columns(out)
+    out = _replace_rule_id_with_name(out)
+    keep = [c for c in ["严重度", "规则名称", "规则ID", "主体账簿", "月", "三级科目", "实际客户", "部门", "项目", "命中原因", "指标值"] if c in out.columns]
+    rest = [c for c in out.columns if c not in keep and c != "命中原因"]
+    order = keep + [c for c in out.columns if c not in keep]
+    out = out[order]
+    if "严重度" in out.columns:
+        out = out.assign(__sev=out["严重度"].map(_severity_rank)).sort_values(by=["__sev"]).drop(columns=["__sev"])
+    return out.reset_index(drop=True)
+
+
+def _write_sheet(w: pd.ExcelWriter, name: str, df: pd.DataFrame) -> None:
+    ws_name = str(name)[:31]
+    df.to_excel(w, sheet_name=ws_name, index=False)
+    try:
+        from openpyxl.styles import Font, PatternFill
+
+        ws = w.sheets[ws_name]
+        if ws.max_row > 1 and ws.max_column > 0:
+            from openpyxl.utils import get_column_letter
+
+            ws.auto_filter.ref = f"A1:{get_column_letter(ws.max_column)}{ws.max_row}"
+        # 样式：冻结首行 + 按内容自适应列宽
+        ws.freeze_panes = "A2"
+        headers = [str(c.value) for c in ws[1]]
+        # 疑似数据错误清单：优先级底纹（P1红/P2黄/P3灰，参考 收入成本表1.py 标注风格）
+        if "优先级" in headers:
+            pri_idx = headers.index("优先级") + 1
+            fills = {
+                "P1 疑似错误": PatternFill("solid", fgColor="FFC7CE"),
+                "P2 需确认": PatternFill("solid", fgColor="FFF2CC"),
+                "P3 波动参考": PatternFill("solid", fgColor="D9D9D9"),
+            }
+            for r in range(2, ws.max_row + 1):
+                v = ws.cell(row=r, column=pri_idx).value
+                if v in fills:
+                    ws.cell(row=r, column=pri_idx).fill = fills[v]
+        # 含“毛利率”列的页：毛利率<0 红字、>15% 绿字、其余百分比格式（同 收入成本表1.py 毛利异常项目）
+        if "毛利率" in headers:
+            gm_idx = headers.index("毛利率") + 1
+            red_fill = PatternFill("solid", fgColor="FFC7CE")
+            red_font = Font(color="9C0006")
+            green_fill = PatternFill("solid", fgColor="C6EFCE")
+            green_font = Font(color="006100")
+            for r in range(2, ws.max_row + 1):
+                c = ws.cell(row=r, column=gm_idx)
+                v = c.value
+                if isinstance(v, (int, float)):
+                    c.number_format = "0.00%"
+                    if v < 0:
+                        c.fill = red_fill
+                        c.font = red_font
+                    elif v > 0.15:
+                        c.fill = green_fill
+                        c.font = green_font
+        # 毛利类页（负毛利占比检查）：项目毛利润<0 红标（同 收入成本表1.py 项目毛利为负项目）
+        if "毛利" in ws_name and "项目毛利润" in headers:
+            profit_idx = headers.index("项目毛利润") + 1
+            red_fill = PatternFill("solid", fgColor="FFC7CE")
+            red_font = Font(color="9C0006")
+            for r in range(2, ws.max_row + 1):
+                c = ws.cell(row=r, column=profit_idx)
+                v = c.value
+                if isinstance(v, (int, float)) and v < 0:
+                    c.fill = red_fill
+                    c.font = red_font
+        for col in ws.columns:
+            letter = get_column_letter(col[0].column)
+            width = max(len(str(c.value)) if c.value is not None else 0 for c in col[: min(len(col), 200)])
+            ws.column_dimensions[letter].width = min(max(width + 2, 8), 45)
+    except Exception:
+        pass
 
 
 def _severity_rank(s: str) -> int:
@@ -233,13 +394,86 @@ def write_report(
     df_aux: Optional[pd.DataFrame] = None,
     df_mapping: Optional[pd.DataFrame] = None,
     target_month: Optional[int] = None,
+    workdir: Optional[Path] = None,
+    yyyymm: str = "",
 ) -> None:
     with pd.ExcelWriter(path, engine="openpyxl") as w:
+        # 1. 规则说明
         rule_info_out = build_rule_info_sheet(checks or [])
         if rule_info_out is None or rule_info_out.empty:
             rule_info_out = pd.DataFrame({"提示": ["未提供规则清单"]})
-        rule_info_out.to_excel(w, sheet_name="规则与内容", index=False)
+        _write_sheet(w, "规则与内容", _round_for_output(rule_info_out))
 
+        # 2. 审核汇总（工作目录/目标月/各类命中总数/AI 状态等）
+        overview_out = overview if overview is not None and not overview.empty else pd.DataFrame({"提示": ["无汇总信息"]})
+        _write_sheet(w, "审核汇总", _round_for_output(overview_out))
+
+        # 3. 规则命中统计（每规则命中数与严重度分布）
+        breakdown_out = (
+            overview_rule_breakdown
+            if overview_rule_breakdown is not None and not overview_rule_breakdown.empty
+            else pd.DataFrame({"提示": ["无命中"]})
+        )
+        _write_sheet(w, "规则命中统计", _round_for_output(breakdown_out))
+
+        # 4. 疑似数据错误清单（面向当期修正的统一输出：P1错误/P2需确认/P3参考 + 修正动作）
+        fix_out = build_fix_list_sheet(
+            df_income=df_income,
+            income_dim_anomalies=income_dim_anomalies,
+            income_gm_anomalies=income_gm_anomalies,
+            aux_rule_violations=aux_rule_violations,
+            aux_df=df_aux,
+            target_month=target_month,
+        )
+        # 登记表打通：已知问题去重（登记状态列）+ 待登记行导出
+        reg_path = find_registration_file(workdir) if workdir is not None else None
+        reg_df = load_registration_table(reg_path)
+        if not reg_df.empty and fix_out is not None and not fix_out.empty:
+            fix_out = attach_registration_status(fix_out, reg_df, yyyymm)
+        elif fix_out is not None and not fix_out.empty:
+            fix_out = fix_out.copy()
+            fix_out["登记状态"] = "未登记"
+        if fix_out is None or fix_out.empty:
+            fix_out = pd.DataFrame({"提示": ["无疑似数据错误命中"]})
+        _write_sheet(w, "疑似数据错误清单", fix_out)
+
+        # 4.1 待登记行（登记表格式，可直接粘贴走指派闭环）
+        reg_export = export_registration_rows(fix_out, yyyymm)
+        if reg_export is None or reg_export.empty:
+            reg_export = pd.DataFrame({"提示": ["无待登记项（全部已登记或无命中）"]})
+        _write_sheet(w, "待登记异常", reg_export)
+
+        # 4.1 新增规则明细（高毛利率/倒挂/人次社保背离/占比/环比等）
+        extra_out = build_extra_rules_sheet(income_dim_anomalies, income_gm_anomalies)
+        if extra_out is None or extra_out.empty:
+            extra_out = pd.DataFrame({"提示": ["无命中"]})
+        _write_sheet(w, "新增规则明细", _round_for_output(extra_out))
+
+        # 5. 深度分析：规则关联影响 + 客户综合分析
+        correlation_index, pp_keys = build_correlation_index(income_dim_anomalies, income_gm_anomalies)
+        corr_out = build_rule_correlation_sheet(
+            df_income=df_income,
+            income_dim_anomalies=income_dim_anomalies,
+            income_gm_anomalies=income_gm_anomalies,
+            aux_rule_violations=aux_rule_violations,
+            target_month=target_month,
+        )
+        corr_out = _sort_by_mark(corr_out)
+        if corr_out is None or corr_out.empty:
+            corr_out = pd.DataFrame({"提示": ["无多规则关联命中"]})
+        _write_sheet(w, "规则关联分析", corr_out)
+
+        profile_out = build_customer_profile_sheet(
+            df_income=df_income,
+            target_month=target_month,
+            correlation_index=correlation_index,
+            pp_keys=pp_keys,
+        )
+        if profile_out is None or profile_out.empty:
+            profile_out = pd.DataFrame({"提示": ["无客户画像数据"]})
+        _write_sheet(w, "客户综合分析", profile_out)
+
+        # 6. 明细 sheets
         headcount_out = build_headcount_report(
             df_aux=df_aux,
             aux_rule_violations=aux_rule_violations,
@@ -247,7 +481,7 @@ def write_report(
         )
         if headcount_out is None or headcount_out.empty:
             headcount_out = pd.DataFrame({"提示": ["无命中"]})
-        headcount_out.to_excel(w, sheet_name="人次数据检查", index=False)
+        _write_sheet(w, "人次数据检查", _round_for_output(headcount_out))
 
         customer_out = build_customer_consistency_sheet(
             df_income=df_income,
@@ -255,9 +489,10 @@ def write_report(
             df_mapping=df_mapping,
             target_month=target_month,
         )
+        customer_out = _sort_by_mark(customer_out)
         if customer_out is None or customer_out.empty:
             customer_out = pd.DataFrame({"提示": ["无命中"]})
-        customer_out.to_excel(w, sheet_name="客户归属一致性检查", index=False)
+        _write_sheet(w, "客户归属一致性检查", _round_for_output(customer_out))
 
         rev_cost_out = build_rev_cost_zero_mismatch_sheet(
             df_income=df_income,
@@ -267,7 +502,7 @@ def write_report(
         )
         if rev_cost_out is None or rev_cost_out.empty:
             rev_cost_out = pd.DataFrame({"提示": ["无命中"]})
-        rev_cost_out.to_excel(w, sheet_name="收入成本零值不匹配检查", index=False)
+        _write_sheet(w, "收入成本零值不匹配检查", _round_for_output(rev_cost_out))
 
         pp_out = build_pp_change_sheet(
             df_income=df_income,
@@ -275,9 +510,10 @@ def write_report(
             checks=checks,
             target_month=target_month,
         )
+        pp_out = _sort_by_mark(pp_out)
         if pp_out is None or pp_out.empty:
             pp_out = pd.DataFrame({"提示": ["无命中"]})
-        pp_out.to_excel(w, sheet_name="同比波动检查", index=False)
+        _write_sheet(w, "同比波动检查", _round_for_output(pp_out))
 
         outsourcing_out = build_outsourcing_missing_cost_sheet(
             df_income=df_income,
@@ -287,7 +523,7 @@ def write_report(
         )
         if outsourcing_out is None or outsourcing_out.empty:
             outsourcing_out = pd.DataFrame({"提示": ["无命中"]})
-        outsourcing_out.to_excel(w, sheet_name="外包缺工资或挂靠检查", index=False)
+        _write_sheet(w, "外包缺工资或挂靠检查", _round_for_output(outsourcing_out))
 
         neg_gm_out = build_neg_profit_ratio_sheet(
             df_income=df_income,
@@ -297,7 +533,7 @@ def write_report(
         )
         if neg_gm_out is None or neg_gm_out.empty:
             neg_gm_out = pd.DataFrame({"提示": ["无命中"]})
-        neg_gm_out.to_excel(w, sheet_name="负毛利占比检查", index=False)
+        _write_sheet(w, "负毛利占比检查", _round_for_output(neg_gm_out))
 
 
 def build_comparison_report_for_all_rules(
@@ -389,6 +625,7 @@ def build_headcount_report(
         and "凭证审核" not in str(c)
     ]
     out = detail[detail_cols].copy() if detail_cols else detail.copy()
+    out["源行号"] = [int(i) + 2 if i >= 0 else "" for i in idx_list]
 
     for c in keep_hit_cols:
         out[c] = hits[c].reset_index(drop=True)

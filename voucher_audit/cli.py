@@ -132,10 +132,54 @@ def cmd_inspect(args: argparse.Namespace) -> int:
             matched = match_sheet_name(xls, matcher)
             if not matched:
                 continue
+            # 注意：先取行数再 read_excel——read_excel 迭代后 read-only 工作表的 max_row 会失效
+            try:
+                ws = xls.book[matched]
+                data_rows = max(int(ws.max_row) - 1, 0)
+            except Exception:
+                data_rows = "?"
             df0 = pd.read_excel(xls, sheet_name=matched, nrows=0)
             cols = [str(c) for c in df0.columns]
             print(f"\n匹配到 sheet: {logical} -> {matched}")
             print(f"列({len(cols)}): {cols}")
+
+            # 数据画像：行数 + 月分布（供 run 前预估数据量级与覆盖月份）
+            print(f"数据行数: {data_rows}")
+            if "月" in cols:
+                try:
+                    m = pd.read_excel(xls, sheet_name=matched, usecols=["月"])
+                    mv = pd.to_numeric(m["月"], errors="coerce").dropna().astype(int)
+                    if mv.empty:
+                        print("月分布: （无法解析）")
+                    else:
+                        dist = mv.value_counts().sort_index()
+                        dist_text = "，".join(f"{int(k)}月:{v}" for k, v in dist.items())
+                        print(f"月分布: {dist_text}")
+                        print(f"数据最大月: {int(mv.max())}")
+                except Exception as e:
+                    print(f"月分布: 读取失败（{type(e).__name__}）")
+
+    # 目标月推断（与 run 一致：收入成本规则看收入成本表最大月，辅助帐规则看序时账最大月）
+    try:
+        inc_sheet = match_sheet_name(open_workbook(income_cost).xls, rules.inputs.sheets["income_cost"]) if income_cost.exists() else None
+        aux_sheet = match_sheet_name(open_workbook(data_summary).xls, rules.inputs.sheets["aux_ledger"]) if data_summary.exists() else None
+        inc_m = (
+            pd.to_numeric(pd.read_excel(income_cost, sheet_name=inc_sheet, usecols=["月"])["月"], errors="coerce").dropna().astype(int)
+            if inc_sheet else pd.Series(dtype=int)
+        )
+        aux_m = (
+            pd.to_numeric(pd.read_excel(data_summary, sheet_name=aux_sheet, usecols=["月"])["月"], errors="coerce").dropna().astype(int)
+            if aux_sheet else pd.Series(dtype=int)
+        )
+        inferred = int(aux_m.max()) if not aux_m.empty else (int(inc_m.max()) if not inc_m.empty else None)
+        print(
+            "\n目标月推断："
+            f"收入成本表最大月={int(inc_m.max()) if not inc_m.empty else '无'}，"
+            f"调整后序时账最大月={int(aux_m.max()) if not aux_m.empty else '无'}"
+            + (f"，run 默认目标月={inferred}" if inferred else "")
+        )
+    except Exception as e:
+        print(f"\n目标月推断失败：{type(e).__name__}: {e}")
 
     return 0
 
@@ -152,7 +196,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     print(f"- workdir: {Path(args.workdir).resolve()}")
     print(f"- compiled rules: {compiled_rules_path}")
     print(f"- 规则数: {len(items)}")
-    if items:
+    if getattr(args, "quiet", False):
+        # 精简模式：规则明细已可通过 preview 查看，不重复打印
+        print("（--quiet：规则明细已省略，可用 `voucher-audit preview` 查看）")
+    elif items:
         print(_format_preview_table(items))
     else:
         print("（无审核规则）")
@@ -387,6 +434,7 @@ def build_parser() -> argparse.ArgumentParser:
     sr = sub.add_parser("run", help="执行审核：preview -> 确认 -> 生成报告（可选源文件标注）")
     sr.add_argument("--workdir", default=".", help="工作目录（包含 数据汇总.xlsx、考核表输出.xlsx）")
     sr.add_argument("--yes", action="store_true", help="跳过交互确认（仍建议谨慎使用）")
+    sr.add_argument("--quiet", action="store_true", help="精简输出：不重复打印规则明细表")
     sr.add_argument("--month", type=int, default=None, help="目标月份（默认自动从数据最大月推断）")
     sr.add_argument("--include-rule-id", action="append", default=None, help="仅执行指定规则ID（可多次传入）")
     sr.add_argument("--enable-ai", action="store_true", default=None, help="启用 AI 复核（需要 OPENAI_API_KEY）")

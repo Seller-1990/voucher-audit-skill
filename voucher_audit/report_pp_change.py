@@ -4,6 +4,8 @@ from typing import Any, Optional
 
 import pandas as pd
 
+from .check_utils import _src_rows_text
+
 def build_pp_change_sheet(
     df_income: Optional[pd.DataFrame],
     income_dim_anomalies: Optional[pd.DataFrame],
@@ -102,6 +104,15 @@ def build_pp_change_sheet(
         .reset_index()
     )
 
+    # 源行号回溯（Excel 实际行号，仅问题行展示）
+    if "_src_row" in df.columns:
+        src_map = (
+            df.groupby(key_fields + [month_col], dropna=False)["_src_row"]
+            .apply(_src_rows_text)
+            .reset_index(name="源行号")
+        )
+        g = g.merge(src_map, how="left", on=key_fields + [month_col])
+
     item_by_name: dict[str, dict[str, Any]] = {}
     for it in items:
         if isinstance(it, dict):
@@ -192,6 +203,7 @@ def build_pp_change_sheet(
         rec_problem = _row_for_month(base_problem, cur_month_i, cur_row)
         rec_problem["标注"] = "问题"
         rec_problem["命中原因"] = reason
+        rec_problem["源行号"] = str(cur_row.get("源行号", "")) if cur_row is not None and "源行号" in g.columns else ""
         rec_problem["指标名称"] = indicator_name
         rec_problem["指标值"] = h.get("本期值", "")
         rec_problem["严重度"] = sev
@@ -265,7 +277,7 @@ def build_pp_change_sheet(
         return pd.DataFrame()
 
     out = pd.DataFrame(out_rows)
-    final_cols = key_fields + [month_col] + list(cols_map.keys()) + ["标注", "命中原因", "指标名称", "指标值", "严重度"]
+    final_cols = key_fields + [month_col] + list(cols_map.keys()) + ["源行号", "标注", "命中原因", "指标名称", "指标值", "严重度"]
     for c in final_cols:
         if c not in out.columns:
             out[c] = ""

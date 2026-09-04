@@ -36,7 +36,7 @@ def build_customer_consistency_sheet(
         and not str(c).startswith("Unnamed:")
         and "凭证审核" not in str(c)
     ]
-    tail_cols = ["标注", "命中原因", "严重度"]
+    tail_cols = ["源行号", "标注", "命中原因", "严重度"]
 
     def _norm(v: Any) -> str:
         if v is None:
@@ -56,11 +56,16 @@ def build_customer_consistency_sheet(
             df = df[df[k].astype(str) == str(v)]
         return df
 
+    def _src_row_text(r: Any) -> str:
+        v = pd.to_numeric(pd.Series([r.get("_src_row")]), errors="coerce").iloc[0]
+        return str(int(v)) if pd.notna(v) else ""
+
     def _add_rows(df_rows: pd.DataFrame, *, mark: str, reason: str, severity: str) -> None:
         if df_rows is None or df_rows.empty:
             return
         for _, r in df_rows.iterrows():
             rec = {c: r.get(c, "") for c in original_cols}
+            rec["源行号"] = _src_row_text(r)
             rec["标注"] = mark
             rec["命中原因"] = reason
             rec["严重度"] = severity
@@ -106,11 +111,12 @@ def build_customer_consistency_sheet(
                 rec = {c: h.get(c, "") for c in original_cols}
                 if biz and "三级科目" in rec:
                     rec["三级科目"] = biz
+                rec["源行号"] = _src_row_text(h)
                 rec["标注"] = severity or "错误"
                 rec["命中原因"] = reason
                 rec["严重度"] = severity
                 out_rows.append(rec)
-                problem_rows = pd.DataFrame([rec])[original_cols]
+                continue
             else:
                 _add_rows(problem_rows, mark=severity or "错误", reason=reason, severity=severity)
             continue

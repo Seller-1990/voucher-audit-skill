@@ -28,9 +28,15 @@ class Logger:
             s(line)
 
 
+def _stdout_sink(line: str) -> None:
+    print(line)
+
+
 def make_logger(sink: Optional[LogSink] = None) -> Logger:
-    sinks: list[LogSink] = []
-    if sink is not None:
-        sinks.append(sink)
+    """默认 sink 为 stdout——修复此前无 sink 时 INFO/WARN 日志全部被吞掉的问题。
+
+    测试如需静默 logger，请显式传入一个收集型 sink。
+    """
+    sinks: list[LogSink] = [sink] if sink is not None else [_stdout_sink]
     return Logger(sinks=sinks)
 

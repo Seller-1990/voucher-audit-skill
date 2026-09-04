@@ -245,6 +245,19 @@ def load_audit_context(
         # - 收入成本规则使用收入成本的最大月
         target_month = pick_target_month(df_aux, df_inc, "月", "月", aux_scope_suffix="ledger")
 
+    # 月列防御性归一（数值化），避免源文件为 '08' 等文本月份时 == target_month 判断失效
+    for _df in (df_aux, df_inc, df_map):
+        if _df is not None and not _df.empty and "月" in _df.columns:
+            _df["月"] = pd.to_numeric(_df["月"], errors="coerce")
+
+    # 源行号（Excel 实际行号 = DataFrame 位置 + 表头 1 行），供报告回溯源表
+    if "_src_row" not in df_aux.columns:
+        df_aux = df_aux.assign(_src_row=pd.RangeIndex(len(df_aux)) + 2)
+    if "_src_row" not in df_inc.columns:
+        df_inc = df_inc.assign(_src_row=pd.RangeIndex(len(df_inc)) + 2)
+    if df_map is not None and not df_map.empty and "_src_row" not in df_map.columns:
+        df_map = df_map.assign(_src_row=pd.RangeIndex(len(df_map)) + 2)
+
     return LoadedAuditContext(
         workdir=workdir,
         rules_path=rules_path,
@@ -319,6 +332,36 @@ def run_audit(
         df_mapping=df_map,
         target_month=int(target_month),
     )
+
+    # 命中统计（stdout/日志一眼可见，无需打开报告逐 sheet 数）
+    def _stat_line(df: pd.DataFrame) -> str:
+        if df is None or df.empty or "规则ID" not in df.columns:
+            return ""
+        parts: list[str] = []
+        for rid, grp in df.groupby("规则ID", dropna=False):
+            rid_s = str(rid).strip() or "（空）"
+            rname = rule_name_map.get(rid_s, rid_s)
+            if "严重度" in grp.columns:
+                sev = grp["严重度"].value_counts().to_dict()
+                sev_str = "、" + "，".join(f"{k}{v}" for k, v in sev.items()) if sev else ""
+            else:
+                sev_str = ""
+            parts.append(f"{rname}={len(grp)}{sev_str}")
+        return "；".join(parts)
+
+    rule_name_map = {
+        str((c or {}).get("id", "")).strip(): (str((c or {}).get("name", "")).strip() or str((c or {}).get("id", "")))
+        for c in active_rules.checks
+    }
+    stat_parts = [
+        s for s in [
+            _stat_line(aux_rule_violations),
+            _stat_line(aux_suspect_wrong),
+            _stat_line(income_dim),
+            _stat_line(income_gm),
+        ] if s
+    ]
+    log.info("命中统计：" + ("；".join(stat_parts) if stat_parts else "全部规则无命中"))
 
     ai_df: Optional[pd.DataFrame] = None
     ai_enabled = bool(active_rules.ai.enabled_default) if enable_ai is None else bool(enable_ai)
@@ -420,6 +463,8 @@ def run_audit(
         df_income=df_inc,
         df_mapping=df_map,
         target_month=int(target_month),
+        workdir=ctx.workdir,
+        yyyymm=yyyymm,
     )
     log.info(f"报告已生成：{report_paths.report_path}")
 
