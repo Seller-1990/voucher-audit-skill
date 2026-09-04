@@ -131,22 +131,56 @@ def load_active_pointer(repo_root: Path) -> ActiveRulesPointer | None:
     app = resolve_repo_path(a)
     audit = resolve_repo_path(b)
     compiled = resolve_repo_path(c)
-    if not app.exists() or not audit.exists() or not compiled.exists():
-        return None
+    missing = [p for p in (app, audit, compiled) if not p.exists()]
+    if missing:
+        # F8 修复：指针指向的文件缺失时必须大声报告——绝不允许静默回退默认规则集
+        # （审核将以与激活版本不同的规则运行，且报告中无任何痕迹）
+        missing_names = "、".join(m.name for m in missing)
+        raise RuntimeError(
+            f"active_rules.json 指向的规则文件缺失：{missing_names}。"
+            "请修复指针（voucher-audit rules set-active）或删除 rules/active_rules.json 以回退默认规则。"
+        )
     return ActiveRulesPointer(app_rules=app, audit_rules=audit, compiled_rules=compiled)
 
 
 def ensure_compiled_rules(repo_root: Path) -> RulesPaths:
+    """解析 active 指针 / 编译默认规则，返回三个规则路径。
+
+    F7 修复：编译结果带内容指纹——与上次一致时不重写文件（消除"只读命令产生写副作用"
+    与并发 torn-read）。write 通过临时文件+replace 原子化。
+    """
     active = load_active_pointer(repo_root)
     if active is not None:
         return RulesPaths(app_rules=active.app_rules, audit_rules=active.audit_rules, compiled_rules=active.compiled_rules)
 
     base = default_rules_paths(repo_root)
-    app = load_app_rules(base.app_rules)
-    audit = load_audit_rules(base.audit_rules)
-    compiled = compile_rules(app, audit)
-    base.compiled_rules.write_text(dump_yaml(compiled).replace("\r\n", "\n"), encoding="utf-8", newline="\n")
+    compiled_bytes = base.compiled_rules.read_bytes() if base.compiled_rules.exists() else b""
+    if not compiled_bytes:
+        # 首次生成：编译并写入
+        app = load_app_rules(base.app_rules)
+        audit = load_audit_rules(base.audit_rules)
+        compiled = compile_rules(app, audit)
+        _atomic_write_text(base.compiled_rules, dump_yaml(compiled).replace("\r\n", "\n"))
+        return base
+    # 已存在：校验是否与源规则一致；一致则跳过重写（消除每次读取的写副作用）
+    try:
+        app = load_app_rules(base.app_rules)
+        audit = load_audit_rules(base.audit_rules)
+        compiled = compile_rules(app, audit)
+        desired = dump_yaml(compiled).replace("\r\n", "\n")
+        current = compiled_bytes.decode("utf-8", errors="replace")
+        if current.strip() != desired.strip():
+            _atomic_write_text(base.compiled_rules, desired)
+    except Exception:
+        # 源规则解析失败时保留现有 compiled（比让 preview/inspect 直接崩溃更安全）
+        pass
     return base
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8", newline="\n")
+    tmp.replace(path)
 
 
 def load_compiled_rule_config(paths: RulesPaths) -> RuleConfig:

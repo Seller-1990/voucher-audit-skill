@@ -20,6 +20,22 @@ def open_workbook(path: Path) -> LoadedWorkbook:
     return LoadedWorkbook(path=path, xls=xls)
 
 
+class _ClosedExcelFile:
+    """pd.ExcelFile 的上下文管理器包装（F3 修复：确保句柄关闭）。"""
+
+    def __init__(self, path: Path) -> None:
+        self._xls = pd.ExcelFile(path)
+
+    def __enter__(self) -> pd.ExcelFile:
+        return self._xls
+
+    def __exit__(self, *exc: object) -> None:
+        try:
+            self._xls.close()
+        except Exception:
+            pass
+
+
 def match_sheet_name(xls: pd.ExcelFile, matcher: SheetMatcher) -> Optional[str]:
     names = [str(n) for n in xls.sheet_names]
     for p in matcher.preferred:

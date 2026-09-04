@@ -37,6 +37,8 @@ class LoadedAuditContext:
     data_summary_path: Path
     income_cost_path: Path
     target_month: int
+    target_month_aux: int
+    target_month_income: int
     df_aux: pd.DataFrame
     df_income: pd.DataFrame
     df_mapping: Optional[pd.DataFrame]
@@ -58,21 +60,27 @@ def pick_target_month(
     inc_month_col: str,
     aux_scope_suffix: Optional[str] = None
 ) -> int:
+    """兼容旧接口：取两表目标月中较大者。新代码请用 pick_target_months（双目标月）。
+
+    历史注记：本函数文档曾声称"按 scope 分别选择"，实际只返回一个 int——
+    对抗性复核 F1。保留旧签名避免破坏外部调用，语义改为显式的 max(两表)。
     """
-    选择目标月份，按 scope 分别选择而不是取全局最大值。
+    aux_target, inc_target = pick_target_months(df_aux, df_income, aux_month_col, inc_month_col)
+    return max(aux_target, inc_target)
 
-    修复 bug: 原实现取两张表的最大月，导致辅助帐表中的月=1数据
-    被跳过（因为收入成本表可能只有月=3的数据）。
 
-    参数:
-        df_aux: 辅助帐 DataFrame
-        df_income: 收入成本 DataFrame
-        aux_month_col: 辅助帐月份列名
-        inc_month_col: 收入成本月份列名
-        aux_scope_suffix: 辅助帐规则 scope 的后缀（如'_aux'），用于判断规则适用范围
+def pick_target_months(
+    df_aux: pd.DataFrame,
+    df_income: pd.DataFrame,
+    aux_month_col: str,
+    inc_month_col: str,
+) -> tuple[int, int]:
+    """按数据源分别选择目标月（对抗性复核 F1 修复）。
 
-    返回:
-        目标月份（整数）
+    - 辅助帐规则用 调整后序时账 的最大月；
+    - 收入成本规则用 收入成本表 的最大月。
+    两表月末 cutoff 可能不同（月中出数），单一目标月会让一侧检查静默跑空集。
+    某一侧完全无法解析月份时回退到另一侧的月份。
     """
     aux_m = _normalize_month(df_aux, aux_month_col)
     inc_m = _normalize_month(df_income, inc_month_col)
@@ -80,26 +88,16 @@ def pick_target_month(
     if aux_m.empty and inc_m.empty:
         raise ValueError("两张表均无法解析\"月\"列")
 
-    m = 0
+    aux_target = int(aux_m.max()) if not aux_m.empty else 0
+    inc_target = int(inc_m.max()) if not inc_m.empty else 0
 
-    # 根据 scope_suffix 决定使用哪个表的月份
-    if aux_scope_suffix and ("_aux" in aux_scope_suffix or "ledger" in aux_scope_suffix):
-        # 辅助帐范围的规则，使用辅助帐的最大月
-        if not aux_m.empty:
-            m = int(aux_m.max())
-    else:
-        # 收入成本范围或其他规则，使用收入成本的最大月
-        if not inc_m.empty:
-            m = int(inc_m.max())
+    # 单侧缺失时回退到另一侧（保持旧行为：至少能跑起来，且报告里看得到月份）
+    if aux_target == 0 and inc_target > 0:
+        aux_target = inc_target
+    if inc_target == 0 and aux_target > 0:
+        inc_target = aux_target
 
-    # 如果都无法解析，回退到取两个表的最大月
-    if m == 0:
-        if not aux_m.empty:
-            m = max(m, int(aux_m.max()))
-        if not inc_m.empty:
-            m = max(m, int(inc_m.max()))
-
-    return m
+    return aux_target, inc_target
 
 
 def detect_year_from_workdir(workdir: Path) -> int:
@@ -145,27 +143,27 @@ def load_audit_context(
     if not income_cost_path.exists():
         raise FileNotFoundError(f"缺少文件：{income_cost_path.name}")
 
-    wb_sum = open_workbook(data_summary_path)
-    wb_inc = open_workbook(income_cost_path)
+    from .excel_io import _ClosedExcelFile
 
-    aux_sheet = match_sheet_name(wb_sum.xls, rules.inputs.sheets["aux_ledger"])
-    inc_sheet = match_sheet_name(wb_inc.xls, rules.inputs.sheets["income_cost"])
-    map_sheet = match_sheet_name(wb_sum.xls, rules.inputs.sheets["customer_mapping"]) if "customer_mapping" in rules.inputs.sheets else None
+    with _ClosedExcelFile(data_summary_path) as xls_sum, _ClosedExcelFile(income_cost_path) as xls_inc:
+        aux_sheet = match_sheet_name(xls_sum, rules.inputs.sheets["aux_ledger"])
+        inc_sheet = match_sheet_name(xls_inc, rules.inputs.sheets["income_cost"])
+        map_sheet = match_sheet_name(xls_sum, rules.inputs.sheets["customer_mapping"]) if "customer_mapping" in rules.inputs.sheets else None
 
-    if not aux_sheet:
-        raise ValueError("无法匹配 数据汇总.xlsx 的辅助帐sheet（调整后序时账）")
-    if not inc_sheet:
-        raise ValueError("无法匹配 考核表输出.xlsx 的收入成本表sheet")
+        if not aux_sheet:
+            raise ValueError("无法匹配 数据汇总.xlsx 的辅助帐sheet（调整后序时账）")
+        if not inc_sheet:
+            raise ValueError("无法匹配 考核表输出.xlsx 的收入成本表sheet")
 
-    log.info(f"读取辅助帐sheet：{aux_sheet}")
-    df_aux = read_sheet(wb_sum.xls, aux_sheet)
-    log.info(f"读取收入成本sheet：{inc_sheet}")
-    df_inc = read_sheet(wb_inc.xls, inc_sheet)
+        log.info(f"读取辅助帐sheet：{aux_sheet}")
+        df_aux = read_sheet(xls_sum, aux_sheet)
+        log.info(f"读取收入成本sheet：{inc_sheet}")
+        df_inc = read_sheet(xls_inc, inc_sheet)
 
-    df_map: Optional[pd.DataFrame] = None
-    if map_sheet:
-        log.info(f"读取映射sheet：{map_sheet}")
-        df_map = read_sheet(wb_sum.xls, map_sheet)
+        df_map: Optional[pd.DataFrame] = None
+        if map_sheet:
+            log.info(f"读取映射sheet：{map_sheet}")
+            df_map = read_sheet(xls_sum, map_sheet)
 
     aux_cols_cfg = rules.inputs.columns.get("aux_ledger", {})
     inc_cols_cfg = rules.inputs.columns.get("income_cost", {})
@@ -240,10 +238,10 @@ def load_audit_context(
         df_map = df_map.rename(columns=map_rename)
 
     if target_month is None:
-        # 按 scope 分别选择月份：
-        # - 辅助帐规则 (aux_ledger) 使用辅助帐的最大月
-        # - 收入成本规则使用收入成本的最大月
-        target_month = pick_target_month(df_aux, df_inc, "月", "月", aux_scope_suffix="ledger")
+        # 双目标月（F1 修复）：辅助帐/收入成本各自取最大月，避免单侧错月时静默跑空集
+        aux_target, inc_target = pick_target_months(df_aux, df_inc, "月", "月")
+    else:
+        aux_target = inc_target = int(target_month)
 
     # 月列防御性归一（数值化），避免源文件为 '08' 等文本月份时 == target_month 判断失效
     for _df in (df_aux, df_inc, df_map):
@@ -264,7 +262,9 @@ def load_audit_context(
         rules=rules,
         data_summary_path=data_summary_path,
         income_cost_path=income_cost_path,
-        target_month=int(target_month),
+        target_month=int(max(aux_target, inc_target)),
+        target_month_aux=int(aux_target),
+        target_month_income=int(inc_target),
         df_aux=df_aux,
         df_income=df_inc,
         df_mapping=df_map,
@@ -299,7 +299,14 @@ def run_audit(
     df_inc = ctx.df_income
     df_map = ctx.df_mapping
     target_month = int(ctx.target_month)
-    log.info(f"目标月份：{target_month}")
+    target_month_aux = int(ctx.target_month_aux)
+    target_month_income = int(ctx.target_month_income)
+    if target_month_aux != target_month_income:
+        log.warn(
+            f"两表目标月不一致：调整后序时账={target_month_aux}，收入成本表={target_month_income}。"
+            "各 scope 规则将分别使用各自的目标月（F1 修复）。"
+        )
+    log.info(f"目标月份：收入成本={target_month_income}，序时账={target_month_aux}")
 
     filtered_checks = rules.checks
     if include_rule_ids is not None:
@@ -325,13 +332,22 @@ def run_audit(
     executed_rule_ids = [str((c or {}).get("id", "")).strip() for c in active_rules.checks if str((c or {}).get("id", "")).strip()]
     log.info(f"本次执行规则数：{len(executed_rule_ids)}")
 
-    aux_rule_violations, aux_suspect_wrong, income_dim, income_gm = run_checks(
+    # run_checks 内部按 scope 拆目标月：辅助帐规则用 target_month_aux，收入成本规则用 target_month_income
+    aux_rule_violations, aux_suspect_wrong, income_dim, income_gm, skipped_rules = run_checks(
         rules=active_rules,
         df_aux=df_aux,
         df_income=df_inc,
         df_mapping=df_map,
-        target_month=int(target_month),
+        target_month=int(target_month_income),
+        target_month_aux=int(target_month_aux),
     )
+
+    # 被预检跳过的规则：大声报告，绝不允许"看起来干净的报告"掩盖未执行的规则
+    if skipped_rules:
+        for sk in skipped_rules:
+            log.error(f"规则未执行（跳过）：{sk}")
+        skipped_names = "、".join(str(sk.rule_name) for sk in skipped_rules)
+        log.error(f"命中统计不含以上 {len(skipped_rules)} 条被跳过的规则——请先修复规则配置！")
 
     # 命中统计（stdout/日志一眼可见，无需打开报告逐 sheet 数）
     def _stat_line(df: pd.DataFrame) -> str:
@@ -361,6 +377,8 @@ def run_audit(
             _stat_line(income_gm),
         ] if s
     ]
+    if skipped_rules:
+        stat_parts.append(f"⚠跳过未执行：{'、'.join(str(sk.rule_name) for sk in skipped_rules)}")
     log.info("命中统计：" + ("；".join(stat_parts) if stat_parts else "全部规则无命中"))
 
     ai_df: Optional[pd.DataFrame] = None
@@ -443,6 +461,8 @@ def run_audit(
         {"项目": "AI状态", "值": ai_message},
         {"项目": "需线下核对项", "值": "暂估事项表提报/发票交接/收入确认条件等条款需结合线下流程核对（本工具不直接判错）"},
     ]
+    if skipped_rules:
+        overview_rows.append({"项目": "⚠被跳过的规则", "值": "；".join(str(sk) for sk in skipped_rules)})
     overview = pd.DataFrame(overview_rows)
     overview_rule_breakdown = pd.DataFrame(all_per_rule) if all_per_rule else pd.DataFrame(columns=["规则", "来源", "命中数", "严重度分布"])
 

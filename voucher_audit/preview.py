@@ -173,6 +173,21 @@ def _fields_from_rule(rule: dict[str, Any]) -> list[str]:
         add(params.get("revenue_field"))
         add(params.get("cost_field"))
         add(params.get("profit_field"))
+    elif rtype == "duplicate_row":
+        add(params.get("key_fields"))
+        add(params.get("amount_fields"))
+    elif rtype == "group_hq_unsettled":
+        add(params.get("group_fields"))
+        add(params.get("amount_field"))
+    elif rtype == "similar_customer_rename":
+        add("实际客户")
+    elif rtype == "aux_wage_wrong_customer":
+        add(params.get("summary_field"))
+        add(params.get("wage_keywords"))
+    elif rtype == "mixed_biz_type":
+        add(params.get("group_fields"))
+        add(params.get("biz_type_field"))
+        add(params.get("amount_field"))
 
     return out
 
@@ -181,6 +196,9 @@ def _output_logical_sheet(scope: str, rule_type: str) -> str:
     if scope == "aux_ledger":
         if rule_type in {"hard_rule", "allowed_values", "required_fields", "forbidden_regex", "headcount_data_check"}:
             return "aux_rule_violations"
+        if rule_type == "aux_wage_wrong_customer":
+            # 工资挂错客户由 checks.run_checks 归入 income_dim 输出（severity=错误）
+            return "income_dim_anomalies"
         return "aux_suspect_wrong_account"
     if scope == "income_cost":
         if rule_type in {"gross_margin", "neg_profit_ratio"}:

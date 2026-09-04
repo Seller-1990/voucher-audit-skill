@@ -76,6 +76,16 @@ def load_registration_table(path: Optional[Path]) -> pd.DataFrame:
         xls = pd.ExcelFile(path)
     except Exception:
         return empty
+    try:
+        return _load_registration_from_xls(xls)
+    finally:
+        try:
+            xls.close()
+        except Exception:
+            pass
+
+
+def _load_registration_from_xls(xls: pd.ExcelFile) -> pd.DataFrame:
     for sheet in xls.sheet_names:
         try:
             raw = pd.read_excel(xls, sheet_name=sheet, header=None)

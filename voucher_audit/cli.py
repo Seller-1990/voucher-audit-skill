@@ -67,6 +67,13 @@ def _format_preview_table(items: Sequence[PreviewItem]) -> str:
     return "\n".join(out)
 
 
+class _CompiledPaths:
+    """轻量路径容器：让 load_compiled_rule_config 直接读已解析的 compiled 路径（F7 去重）。"""
+
+    def __init__(self, compiled_rules: Path) -> None:
+        self.compiled_rules = compiled_rules
+
+
 def _load_rules_for_execution(repo_root: Path) -> tuple[Path, dict[str, Any]]:
     paths = ensure_compiled_rules(repo_root)
     app = load_app_rules(paths.app_rules)
@@ -76,7 +83,7 @@ def _load_rules_for_execution(repo_root: Path) -> tuple[Path, dict[str, Any]]:
 def cmd_preview(args: argparse.Namespace) -> int:
     repo_root = repo_root_from_module()
     compiled_rules_path, _app = _load_rules_for_execution(repo_root)
-    rules = load_compiled_rule_config(ensure_compiled_rules(repo_root))
+    rules = load_compiled_rule_config(_CompiledPaths(compiled_rules_path))
 
     items = build_preview_items(rules)
     print(f"规则文件（compiled）：{compiled_rules_path}")
@@ -99,7 +106,8 @@ def cmd_preview(args: argparse.Namespace) -> int:
 def cmd_inspect(args: argparse.Namespace) -> int:
     """脚本化检查：列出输入文件/sheet/列，并展示规则期望的 sheet 匹配结果。"""
     repo_root = repo_root_from_module()
-    rules = load_compiled_rule_config(ensure_compiled_rules(repo_root))
+    paths = ensure_compiled_rules(repo_root)
+    rules = load_compiled_rule_config(_CompiledPaths(paths.compiled_rules))
 
     workdir = Path(args.workdir).resolve()
     data_summary = workdir / rules.inputs.data_summary_file
@@ -189,7 +197,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     repo_root = repo_root_from_module()
     compiled_rules_path, app_rules = _load_rules_for_execution(repo_root)
 
-    rules = load_compiled_rule_config(ensure_compiled_rules(repo_root))
+    rules = load_compiled_rule_config(_CompiledPaths(compiled_rules_path))
     items = build_preview_items(rules)
 
     print("将执行的审核事项（预览）：")
