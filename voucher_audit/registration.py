@@ -176,18 +176,28 @@ def attach_registration_status(
         fixed = str(r.get("是否修改") or "").strip() == "已修改"
         reg_map[k] = reg_map.get(k, False) or fixed
 
+    # 问题描述里提到的客户名集合（增强：有些登记把客户名写在描述里而非客户列）
+    desc_cust_keys: set[str] = set()
+    for _, rr in reg_df.iterrows():
+        desc = _norm_text(rr.get("问题描述"))
+        for token in re.findall(r"[一-龥A-Za-z0-9（）()]+(?:有限公司|分公司|合伙企业)", desc):
+            k = _customer_key(token)
+            if len(k) >= 4:
+                desc_cust_keys.add(k)
+
     def _status(r: pd.Series) -> str:
         ck = _customer_key(r.get("实际客户"))
         bk = _customer_key(r.get("主体账簿"))
         if not ck:
             return "未登记"
-        # 匹配顺序：账簿+客户 → 仅客户
+        # 匹配顺序：账簿+客户 → 仅客户 → 描述文字中提到的客户
         if (bk, ck) in reg_map:
             return "疑似重复出现（曾已修改）" if reg_map[(bk, ck)] else "已登记"
-        # 仅客户匹配：任意账簿下登记过
         for (b, c), fixed in reg_map.items():
             if c == ck:
                 return "疑似重复出现（曾已修改）" if fixed else "已登记"
+        if ck in desc_cust_keys:
+            return "已登记（描述提及）"
         return "未登记"
 
     out["登记状态"] = out.apply(_status, axis=1)

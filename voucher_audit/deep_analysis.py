@@ -40,6 +40,11 @@ _CORRELATION_RULES = {
     "INC_SIMILAR_CUSTOMER_RENAME": "疑似客商改名",
     "AUX_WAGE_WRONG_CUSTOMER": "工资好像挂错了客户（序时账）",
     "INC_MIXED_BIZ_TYPE": "同一个客户混着做多种业务",
+    "INC_REV_COST_BIZ_TYPE_MISMATCH": "收入和成本记的业务类型对不上",
+    "INC_SAME_AMOUNT_ADJACENT_MONTHS": "相邻两个月金额一模一样",
+    "INC_SMALL_AMOUNT_WRONG_DEPT": "零头成本挂在别的部门",
+    "INC_ENTITY_SWITCH_MAPPING_DRIFT": "客户换了主体，映射要跟着改",
+    "INC_REBATE_EXTERNAL_COST_RECONCILE": "收入成本表和账上的外部成本对不上",
 }
 _PP_RULE_ID = "INC_PP_CHANGE"
 _AUX_RULE_IDS = {"AUX_HEADCOUNT_DATA_CHECK": "人次数据检查"}
@@ -345,6 +350,16 @@ def _fix_action(rule_id: str, reason: str, row: dict[str, Any]) -> str:
         return "核对这笔工资/社保实际发给谁，把客户挂对"
     if rule_id == "INC_MIXED_BIZ_TYPE":
         return "核对是不是合同换签了，账上业务类型同步改过来"
+    if rule_id == "INC_REV_COST_BIZ_TYPE_MISMATCH":
+        return "看收入和成本哪一边的业务类型记错了，改过来"
+    if rule_id == "INC_SAME_AMOUNT_ADJACENT_MONTHS":
+        return "核对是不是重复暂估/重复确认了，是的话冲掉一笔"
+    if rule_id == "INC_SMALL_AMOUNT_WRONG_DEPT":
+        return "看这笔零头是不是挂错部门，挂错就调整到正确部门"
+    if rule_id == "INC_ENTITY_SWITCH_MAPPING_DRIFT":
+        return "确认客户换主体的依据，把映射表更新到新主体"
+    if rule_id == "INC_REBATE_EXTERNAL_COST_RECONCILE":
+        return "核对返费/挂靠在账上（外部成本）有没有记全，差额补记或更正"
     if rule_id == _PP_RULE_ID or rule_id == "INC_MOM_CHANGE":
         return "先确认业务是不是真有这么大变化，再决定是否调账"
     return "人工核对"
@@ -368,10 +383,13 @@ def _fix_priority(rule_id: str, severity: str, reason: str) -> tuple[int, str]:
         "INC_DUPLICATE_ROW",
         "INC_GROUP_HQ_UNSETTLED",
         "AUX_WAGE_WRONG_CUSTOMER",
+        "INC_REV_COST_BIZ_TYPE_MISMATCH",
+        "INC_SMALL_AMOUNT_WRONG_DEPT",
+        "INC_REBATE_EXTERNAL_COST_RECONCILE",
     }:
         return (1, "P1 疑似错误")
     # 登记表来源的确认类
-    if rule_id in {"INC_SIMILAR_CUSTOMER_RENAME", "INC_MIXED_BIZ_TYPE"}:
+    if rule_id in {"INC_SIMILAR_CUSTOMER_RENAME", "INC_MIXED_BIZ_TYPE", "INC_ENTITY_SWITCH_MAPPING_DRIFT", "INC_SAME_AMOUNT_ADJACENT_MONTHS"}:
         return (2, "P2 需确认")
     if str(severity) == "错误":
         return (1, "P1 疑似错误")

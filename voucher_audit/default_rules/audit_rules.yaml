@@ -384,3 +384,80 @@ checks:
       biz_type_field: "三级科目"
       amount_field: "全额收入"
       min_gross_revenue: 10000
+
+  # ⑲ 收入成本业务类型错位（登记表-1 序：山东理想"收入、成本业务类型不一致"）
+  - id: INC_REV_COST_BIZ_TYPE_MISMATCH
+    name: "收入和成本记的业务类型对不上"
+    type: rev_cost_biz_type_mismatch
+    scope: income_cost
+    severity: "错误"
+    description: "同一（主体账簿+实际客户）下，有收入行的业务类型集合与有成本行的业务类型集合不一致（如收入记劳务派遣、成本记外包），提示有一边记错。"
+    source:
+      doc: "（登记表）"
+      clause: "收入成本业务类型不一致"
+    params:
+      group_fields: ["主体账簿", "实际客户"]
+      biz_type_field: "三级科目"
+      revenue_field: "全额收入"
+      cost_field: "成本合计"
+      min_amount: 1000
+
+  # ⑳ 相邻月同金额（登记表-1 序：苏州旭创"6月7月暂估了同样金额，是不是重复估了"）
+  - id: INC_SAME_AMOUNT_ADJACENT_MONTHS
+    name: "相邻两个月金额一模一样"
+    type: same_amount_adjacent_months
+    scope: income_cost
+    severity: "需确认"
+    description: "同一组合键在（目标月、上月）的收入或成本完全相等且≥1万，可能重复暂估/重复确认，也可能是真实没变化，需人工确认。"
+    source:
+      doc: "（登记表）"
+      clause: "跨月同金额暂估"
+    params:
+      key_fields: ["主体账簿", "三级科目", "账载客户", "实际客户", "部门", "项目"]
+      amount_fields: ["全额收入", "成本合计"]
+      min_amount: 10000
+
+  # ㉑ 小额成本挂错部门（登记表-1 序：云强"为啥有1100成本在淄博项目部"）
+  - id: INC_SMALL_AMOUNT_WRONG_DEPT
+    name: "零头成本挂在别的部门"
+    type: small_amount_wrong_dept
+    scope: income_cost
+    severity: "错误"
+    description: "同一客户挂 2 个以上部门，某部门金额极小（<5000）而客户总成本大（>5万），零头可能挂错部门。"
+    source:
+      doc: "（登记表）"
+      clause: "部门挂错零头"
+    params:
+      group_fields: ["主体账簿", "实际客户", "部门"]
+      small_amount: 5000
+      customer_total_min: 50000
+
+  # ㉒ 换主体后映射没跟着改（登记表-1 序：上海中汐 3月智择→海信冰箱，8月青岛众腾→海信家电产业园）
+  - id: INC_ENTITY_SWITCH_MAPPING_DRIFT
+    name: "客户换了主体，映射要跟着改"
+    type: entity_switch_mapping_drift
+    scope: income_cost
+    severity: "需确认"
+    description: "同一账载客户在映射表出现 2 个以上主体账簿，且历史实际客户与当月实际客户不一致——现有按同键对比的映射检查抓不到主体切换，提示确认映射切换依据。"
+    source:
+      doc: "（登记表）"
+      clause: "主体切换映射漂移"
+    params:
+      min_entities: 2
+
+  # ㉓ 返费/挂靠与外部成本双向核对（业务确认：返费以服务费等摘要计入 主营业务成本→外部成本）
+  - id: INC_REBATE_EXTERNAL_COST_RECONCILE
+    name: "收入成本表和账上的外部成本对不上"
+    type: rebate_external_cost_reconcile
+    scope: income_cost
+    severity: "错误"
+    description: "收入成本表有返费/挂靠成本的客户组合，与序时账（主营业务成本→外部成本）的实际记账金额比对，差额>1000 提示。排除内部转包（客户为自家主体）。"
+    source:
+      doc: "（登记表）"
+      clause: "返费暂估核对"
+    params:
+      cost_level1: "主营业务成本"
+      cost_level2: "外部成本"
+      diff_threshold: 1000
+      min_amount: 1000
+      own_entity_pattern: "众腾|卓仕达|鲸才|智择|才航"

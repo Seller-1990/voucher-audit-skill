@@ -100,6 +100,25 @@ _TYPE_REQUIRED_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
     "mixed_biz_type": {
         "income": ("主体账簿", "月", "账载客户", "三级科目", "全额收入"),
     },
+    "rev_cost_biz_type_mismatch": {
+        "income": ("主体账簿", "实际客户", "三级科目", "全额收入", "成本合计", "月"),
+    },
+    "same_amount_adjacent_months": {
+        "income": ("主体账簿", "三级科目", "账载客户", "实际客户", "部门", "项目", "月",
+                   "全额收入", "成本合计"),
+    },
+    "small_amount_wrong_dept": {
+        "income": ("主体账簿", "实际客户", "部门", "月", "成本合计", "全额收入"),
+    },
+    "entity_switch_mapping_drift": {
+        "income": ("主体账簿", "账载客户", "实际客户", "月"),
+        "mapping": ("主体账簿", "月", "账载客户", "实际客户"),
+    },
+    "rebate_external_cost_reconcile": {
+        "income": ("主体账簿", "账载客户", "实际客户", "部门", "三级科目", "月",
+                   "项目返费", "第三方挂靠成本", "成本合计"),
+        "aux": ("主体账簿", "账载客户", "一级科目", "二级科目", "三级科目", "月", "本币"),
+    },
     # 旧类型（rare_combo/sealed_hint/drift_check/hard_rule/allowed_values/required_fields/
     # mapping_check/combo_drift/distinct_count/dept_multi_distinct_trigger 等）：
     # 无内置规则使用；预检按"不校验"处理，行为与修复前一致。

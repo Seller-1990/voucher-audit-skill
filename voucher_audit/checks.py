@@ -719,6 +719,261 @@ def _mixed_biz_type_income(df_inc: pd.DataFrame, target_month: int, rule: dict[s
     return _annotate_hits(out, rule, "", "gross")
 
 
+def _rev_cost_biz_type_mismatch_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, Any]) -> pd.DataFrame:
+    """收入和成本记的业务类型对不上：同一（主体+实际客户）下，有收入行的业务类型集合
+    与有成本行的业务类型集合不同（如收入记劳务派遣、成本记外包）。登记表 2026/8 山东理想汽车电池。"""
+    params = rule.get("params", {}) or {}
+    group_fields = [str(x) for x in (params.get("group_fields") or ["主体账簿", "实际客户"])]
+    biz_field = str(params.get("biz_type_field") or "三级科目")
+    revenue_field = str(params.get("revenue_field") or "全额收入")
+    cost_field = str(params.get("cost_field") or "成本合计")
+    min_amount = float(params.get("min_amount", 1000))
+    for c in group_fields + [biz_field, revenue_field, cost_field]:
+        if c not in df_inc.columns:
+            return pd.DataFrame()
+    cur = df_inc[pd.to_numeric(df_inc["月"], errors="coerce").fillna(-1).astype(int) == int(target_month)].copy()
+    if cur.empty:
+        return pd.DataFrame()
+    cur[biz_field] = cur[biz_field].map(_strip_percent_suffix)
+    cur[revenue_field] = pd.to_numeric(cur[revenue_field], errors="coerce").fillna(0.0)
+    cur[cost_field] = pd.to_numeric(cur[cost_field], errors="coerce").fillna(0.0)
+    cur = cur[(cur[revenue_field].abs() > min_amount) | (cur[cost_field].abs() > min_amount)]
+    if cur.empty:
+        return pd.DataFrame()
+    g = cur.groupby(group_fields, dropna=False).agg(
+        rev_types=(biz_field, lambda s: sorted({str(x) for x in s[cur.loc[s.index, revenue_field].abs() > min_amount]})),
+        cost_types=(biz_field, lambda s: sorted({str(x) for x in s[cur.loc[s.index, cost_field].abs() > min_amount]})),
+    ).reset_index()
+    out = g[(g["rev_types"].map(len) > 0) & (g["cost_types"].map(len) > 0) & (g["rev_types"] != g["cost_types"])].copy()
+    if out.empty:
+        return pd.DataFrame()
+    out["指标值"] = out.apply(lambda r: len(set(r["rev_types"]) ^ set(r["cost_types"])), axis=1)
+    out["命中原因"] = out.apply(
+        lambda r: (
+            f"收入的业务类型是 {'、'.join(r['rev_types'])}，成本的却是 {'、'.join(r['cost_types'])}"
+            "（两边业务类型对不上，可能有一边记错了）"
+        ),
+        axis=1,
+    )
+    return _annotate_hits(out, rule, "", "指标值")
+
+
+def _same_amount_adjacent_months_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, Any]) -> pd.DataFrame:
+    """相邻月份金额一模一样：同一组合键在 (目标月, 目标月-1) 的金额完全相等，
+    可能重复暂估/重复确认。登记表 2026/8 苏州旭创（6/7 月同金额 239,972.08）。"""
+    params = rule.get("params", {}) or {}
+    key_fields = [str(x) for x in (params.get("key_fields") or ["主体账簿", "三级科目", "账载客户", "实际客户", "部门", "项目"])]
+    amount_fields = [str(x) for x in (params.get("amount_fields") or ["全额收入", "成本合计"])]
+    min_amount = float(params.get("min_amount", 10000))
+    for c in key_fields + amount_fields + ["月"]:
+        if c not in df_inc.columns:
+            return pd.DataFrame()
+    df = df_inc.copy()
+    if "三级科目" in df.columns:
+        df["三级科目"] = df["三级科目"].map(_strip_percent_suffix)
+    for c in amount_fields:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    df["_m"] = pd.to_numeric(df["月"], errors="coerce").fillna(-1).astype(int)
+    tgt = int(target_month)
+    prev = tgt - 1
+    if prev < 1:
+        return pd.DataFrame()
+    cur = df[df["_m"] == tgt].groupby(key_fields, dropna=False)[amount_fields].sum().reset_index()
+    prev_g = df[df["_m"] == prev].groupby(key_fields, dropna=False)[amount_fields].sum().reset_index()
+    if cur.empty or prev_g.empty:
+        return pd.DataFrame()
+    m = cur.merge(prev_g, on=key_fields, how="inner", suffixes=("", "_prev"))
+    if m.empty:
+        return pd.DataFrame()
+    parts: list[pd.DataFrame] = []
+    for a in amount_fields:
+        p = m[(m[a].abs() >= min_amount) & ((m[a] - m[a + "_prev"]).abs() < 0.01)].copy()
+        if not p.empty:
+            p["指标值"] = p[a]
+            p["命中原因"] = p.apply(
+                lambda r: f"{a} {_fmt_money(r[a])} 元，{tgt-1} 月和 {tgt} 月一分不差（可能重复暂估/重复确认，也可能真没变化）",
+                axis=1,
+            )
+            parts.append(p)
+    if not parts:
+        return pd.DataFrame()
+    out = pd.concat(parts, ignore_index=True).drop_duplicates(subset=key_fields + ["命中原因"])
+    return _annotate_hits(out, rule, "", "指标值")
+
+
+def _small_amount_wrong_dept_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, Any]) -> pd.DataFrame:
+    """小额成本挂错部门：同一客户挂 2+ 部门，某部门金额极小而客户总额大
+    （登记表 2026/8 云强 1,100 元挂在淄博项目部，主体在潍坊项目部）。"""
+    params = rule.get("params", {}) or {}
+    group_fields = [str(x) for x in (params.get("group_fields") or ["主体账簿", "实际客户", "部门"])]
+    small_threshold = float(params.get("small_amount", 5000))
+    total_min = float(params.get("customer_total_min", 50000))
+    for c in group_fields + ["月"]:
+        if c not in df_inc.columns:
+            return pd.DataFrame()
+    cur = df_inc[pd.to_numeric(df_inc["月"], errors="coerce").fillna(-1).astype(int) == int(target_month)].copy()
+    cur = cur[~cur["部门"].astype(str).str.strip().eq("集团本部")] if "部门" in cur.columns else cur
+    if cur.empty:
+        return pd.DataFrame()
+    g = cur.groupby(group_fields, dropna=False)[["成本合计", "全额收入"]].sum().reset_index()
+    for c in ("成本合计", "全额收入"):
+        g[c] = pd.to_numeric(g[c], errors="coerce").fillna(0.0)
+    out_rows: list[dict[str, Any]] = []
+    for (b, c), grp in g.groupby(["主体账簿", "实际客户"], dropna=False):
+        if len(grp) < 2:
+            continue
+        total_cost = grp["成本合计"].abs().sum()
+        if total_cost < total_min:
+            continue
+        for _, r in grp.iterrows():
+            if abs(r["成本合计"]) < small_threshold and abs(r["全额收入"]) < small_threshold:
+                out_rows.append({
+                    "主体账簿": b, "实际客户": c, "部门": r["部门"],
+                    "成本合计": r["成本合计"], "全额收入": r["全额收入"],
+                    "客户总成本": total_cost,
+                    "指标值": r["成本合计"],
+                })
+                break
+    if not out_rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(out_rows)
+    out["命中原因"] = out.apply(
+        lambda r: (
+            f"客户总成本 {r['客户总成本']:,.0f} 元，但部门「{str(r['部门'])[-16:]}」只有成本 {r['成本合计']:,.0f} 元 / 收入 {r['全额收入']:,.0f} 元"
+            "（这么小的零头挂在这个部门，可能挂错了）"
+        ),
+        axis=1,
+    )
+    return _annotate_hits(out, rule, "", "成本合计")
+
+
+def _entity_switch_mapping_drift_income(df_inc: pd.DataFrame, df_map: Optional[pd.DataFrame], target_month: int, rule: dict[str, Any]) -> pd.DataFrame:
+    """换主体后映射没跟着改：同一账载客户在映射表出现 ≥2 个主体账簿，
+    且历史实际客户 ≠ 当月实际客户（登记表 2026/8 上海中汐：3月烟台智择→海信冰箱，
+    8月青岛众腾→海信家电产业园。现有按同键对比的映射检查抓不到这种主体切换）。"""
+    if df_map is None or df_map.empty:
+        return pd.DataFrame()
+    params = rule.get("params", {}) or {}
+    book_field = "主体账簿"
+    for c in [book_field, "账载客户", "实际客户", "月"]:
+        if c not in df_map.columns:
+            return pd.DataFrame()
+    map_df = df_map.copy()
+    map_df["月"] = pd.to_numeric(map_df["月"], errors="coerce")
+    tgt = int(target_month)
+    # 每个账载客户的主体集合 + 历史实际客户 vs 当月实际客户
+    entity_cnt = map_df.groupby("账载客户")[book_field].nunique()
+    multi = entity_cnt[entity_cnt >= int(params.get("min_entities", 2))]
+    if multi.empty:
+        return pd.DataFrame()
+    rows: list[dict[str, Any]] = []
+    for cust in multi.index:
+        sub = map_df[map_df["账载客户"] == cust]
+        books = sorted(str(x) for x in sub[book_field].dropna().unique())
+        hist = sub[sub["月"].notna() & (sub["月"].astype("Int64") != tgt)]
+        cur_m = sub[sub["月"].astype("Int64") == tgt] if sub["月"].notna().any() else sub.iloc[:0]
+        hist_custs = sorted({str(x).strip() for x in hist["实际客户"].dropna()})
+        cur_custs = sorted({str(x).strip() for x in cur_m["实际客户"].dropna()}) if not cur_m.empty else []
+        # 当月收入成本表的实际客户
+        inc_custs: set[str] = set()
+        if df_inc is not None and not df_inc.empty and "实际客户" in df_inc.columns and "账载客户" in df_inc.columns:
+            cur_inc = df_inc[
+                (pd.to_numeric(df_inc["月"], errors="coerce").fillna(-1).astype(int) == tgt)
+                & (df_inc["账载客户"].astype(str).str.strip() == str(cust).strip())
+            ]
+            inc_custs = {str(x).strip() for x in cur_inc["实际客户"].dropna()}
+        changed = (hist_custs and cur_custs and set(hist_custs) != set(cur_custs)) or (
+            hist_custs and inc_custs and not (set(hist_custs) & inc_custs)
+        )
+        if not changed:
+            continue
+        rows.append({
+            "账载客户": cust,
+            "涉及主体": "、".join(books),
+            "历史实际客户": "、".join(hist_custs) if hist_custs else "",
+            "当月实际客户": "、".join(cur_custs) if cur_custs else ("、".join(sorted(inc_custs)) if inc_custs else ""),
+            "指标值": len(books),
+        })
+    if not rows:
+        return pd.DataFrame()
+    out = pd.DataFrame(rows)
+    out["命中原因"] = out.apply(
+        lambda r: (
+            f"客户「{r['账载客户']}」在 {r['涉及主体']} 多个主体下都有映射，实际客户从「{r['历史实际客户']}」换成了「{r['当月实际客户']}」"
+            "——客户换主体了，请确认映射切换依据"
+        ),
+        axis=1,
+    )
+    return _annotate_hits(out, rule, "", "指标值")
+
+
+def _rebate_external_cost_reconcile_income(df_inc: pd.DataFrame, df_aux: Optional[pd.DataFrame], target_month: int, rule: dict[str, Any]) -> pd.DataFrame:
+    """返费/挂靠与外部成本双向核对：收入成本表的返费/挂靠成本 与 序时账"主营业务成本→外部成本"
+    的实际记账不一致（差额>阈值）。返费在序时账以"服务费"等摘要计入外部劳务成本（业务确认），
+    因此按客户+业务类型汇总金额比对，不按摘要关键词。排除内部转包（客户为自家主体）。"""
+    if df_aux is None or df_aux.empty:
+        return pd.DataFrame()
+    params = rule.get("params", {}) or {}
+    cost_level1 = str(params.get("cost_level1") or "主营业务成本")
+    cost_level2 = str(params.get("cost_level2") or "外部成本")
+    diff_threshold = float(params.get("diff_threshold", 1000))
+    min_amount = float(params.get("min_amount", 1000))
+    own_pattern = str(params.get("own_entity_pattern") or "众腾|卓仕达|鲸才|智择|才航")
+    for c in ["主体账簿", "账载客户", "实际客户", "部门", "三级科目"]:
+        if c not in df_inc.columns:
+            return pd.DataFrame()
+    for c in ["主体账簿", "账载客户", "一级科目", "二级科目", "本币"]:
+        if c not in df_aux.columns:
+            return pd.DataFrame()
+    ext = df_aux[
+        (pd.to_numeric(df_aux["月"], errors="coerce").fillna(-1).astype(int) == int(target_month))
+        & (df_aux["一级科目"].astype(str).str.strip() == cost_level1)
+        & (df_aux["二级科目"].astype(str).str.strip() == cost_level2)
+    ].copy()
+    if ext.empty:
+        return pd.DataFrame()
+    # aux 侧同样排除集团本部（与收入成本表口径一致——集团本部行是内部对冲，如逾期考核的双边挂账）
+    ext = ext[~ext["部门"].astype(str).str.strip().eq("集团本部")] if "部门" in ext.columns else ext
+    ext["本币"] = pd.to_numeric(ext["本币"], errors="coerce").fillna(0.0)
+    ext["三级科目"] = ext["三级科目"].map(_strip_percent_suffix)
+    g_aux = ext.groupby(["主体账簿", "三级科目", "账载客户"], dropna=False)["本币"].sum().reset_index(name="aux_cost")
+
+    inc = df_inc[
+        (pd.to_numeric(df_inc["月"], errors="coerce").fillna(-1).astype(int) == int(target_month))
+    ].copy()
+    if inc.empty:
+        return pd.DataFrame()
+    inc = inc[~inc["部门"].astype(str).str.strip().eq("集团本部")] if "部门" in inc.columns else inc
+    inc["三级科目"] = inc["三级科目"].map(_strip_percent_suffix)
+    for c in ("项目返费", "第三方挂靠成本", "成本合计"):
+        if c in inc.columns:
+            inc[c] = pd.to_numeric(inc[c], errors="coerce").fillna(0.0)
+    # 全成本键级比对（outer join，双向覆盖：收入成本表有账上无 / 账上有收入成本表无）
+    g_inc = inc.groupby(["主体账簿", "三级科目", "账载客户"], dropna=False)["成本合计"].sum().reset_index(name="inc_cost")
+    m = g_inc.merge(g_aux, on=["主体账簿", "三级科目", "账载客户"], how="outer").fillna({"aux_cost": 0.0, "inc_cost": 0.0})
+    # 排除内部转包（客户是自家主体）
+    m = m[~m["账载客户"].astype(str).str.contains(own_pattern, regex=True, na=False)]
+    if m.empty:
+        return pd.DataFrame()
+    m["差额"] = m["aux_cost"] - m["inc_cost"]
+    # 只报有金额意义的组合（任一侧 ≥ min_amount）
+    m = m[(m["aux_cost"].abs() >= min_amount) | (m["inc_cost"].abs() >= min_amount)]
+    out = m[m["差额"].abs() > diff_threshold].copy()
+    if out.empty:
+        return pd.DataFrame()
+    out = out.sort_values(by=["差额"], key=lambda s: s.abs(), ascending=False)
+    out["指标值"] = out["差额"]
+    out["命中原因"] = out.apply(
+        lambda r: (
+            f"客户「{r['账载客户']}」（{r['三级科目']}）收入成本表成本 {r['inc_cost']:,.2f} 元，"
+            f"序时账外部成本 {r['aux_cost']:,.2f} 元，差 {r['差额']:,.2f} 元"
+            "（两边有一边没记全或金额错）"
+        ),
+        axis=1,
+    )
+    return _annotate_hits(out, rule, "", "差额")
+
+
 def run_checks(
     rules: RuleConfig,
     df_aux: pd.DataFrame,
@@ -813,6 +1068,19 @@ def run_checks(
                 inc_dim.append(_with_rule_name(_similar_customer_rename_income(df_income, target_month, rule), rule))
             elif rtype == "mixed_biz_type":
                 inc_dim.append(_with_rule_name(_mixed_biz_type_income(df_income, target_month, rule), rule))
+            elif rtype == "rev_cost_biz_type_mismatch":
+                inc_dim.append(_with_rule_name(_rev_cost_biz_type_mismatch_income(df_income, target_month, rule), rule))
+            elif rtype == "same_amount_adjacent_months":
+                inc_dim.append(_with_rule_name(_same_amount_adjacent_months_income(df_income, target_month, rule), rule))
+            elif rtype == "small_amount_wrong_dept":
+                inc_dim.append(_with_rule_name(_small_amount_wrong_dept_income(df_income, target_month, rule), rule))
+            elif rtype == "entity_switch_mapping_drift":
+                inc_dim.append(_with_rule_name(_entity_switch_mapping_drift_income(df_income, df_mapping, target_month, rule), rule))
+            elif rtype == "rebate_external_cost_reconcile":
+                sub_rule = {**rule, "params": {**(rule.get("params") or {})}}
+                _rc = _rebate_external_cost_reconcile_income(df_income, df_aux, target_month, sub_rule)
+                if _rc is not None and not _rc.empty:
+                    inc_dim.append(_with_rule_name(_rc, rule))
             elif rtype == "aux_wage_wrong_customer":
                 sub_rule = {**rule, "params": {**(rule.get("params") or {}), "_df_income": df_income}}
                 _aw = _aux_wage_wrong_customer(df_aux, target_month_aux, sub_rule)

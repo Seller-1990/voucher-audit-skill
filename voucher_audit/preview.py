@@ -188,6 +188,27 @@ def _fields_from_rule(rule: dict[str, Any]) -> list[str]:
         add(params.get("group_fields"))
         add(params.get("biz_type_field"))
         add(params.get("amount_field"))
+    elif rtype == "rev_cost_biz_type_mismatch":
+        add(params.get("group_fields"))
+        add(params.get("biz_type_field"))
+        add(params.get("revenue_field"))
+        add(params.get("cost_field"))
+    elif rtype == "same_amount_adjacent_months":
+        add(params.get("key_fields"))
+        add(params.get("amount_fields"))
+    elif rtype == "small_amount_wrong_dept":
+        add(params.get("group_fields"))
+        add("成本合计")
+        add("全额收入")
+    elif rtype == "entity_switch_mapping_drift":
+        add("账载客户")
+        add("主体账簿")
+        add("实际客户")
+    elif rtype == "rebate_external_cost_reconcile":
+        add(params.get("cost_level1"))
+        add(params.get("cost_level2"))
+        add("项目返费")
+        add("第三方挂靠成本")
 
     return out
 
