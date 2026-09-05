@@ -67,6 +67,7 @@ def _rev_cost_zero_mismatch_income(df_inc: pd.DataFrame, target_month: int, rule
     biz_type_field = str(params.get("biz_type_field") or "三级科目")
     biz_type_keywords = [str(x) for x in (params.get("biz_type_keywords") or [])]
     strip_percent_suffix = bool(params.get("biz_type_strip_percent_suffix", False))
+    min_amount = float(params.get("min_amount", 0))
 
     for c in key_fields + [revenue_field, cost_field, "月"]:
         if c not in df_inc.columns:
@@ -109,6 +110,11 @@ def _rev_cost_zero_mismatch_income(df_inc: pd.DataFrame, target_month: int, rule
     out = g[(g["rev_is_zero"] & (~g["cost_is_zero"])) | ((~g["rev_is_zero"]) & g["cost_is_zero"])].copy()
     if out.empty:
         return pd.DataFrame()
+    if min_amount > 0:
+        # 规模过滤：非零一侧金额太小的组合没有审计价值（多为结算时点错位的小尾差）。
+        out = out[out[[revenue_field, cost_field]].abs().max(axis=1) >= min_amount]
+        if out.empty:
+            return pd.DataFrame()
 
     out["命中原因"] = out.apply(
         lambda r: f"{revenue_field}=0且{cost_field}≠0" if bool(r["rev_is_zero"]) and not bool(r["cost_is_zero"]) else f"{cost_field}=0且{revenue_field}≠0",
@@ -266,9 +272,15 @@ def _rev_cost_inversion_income(df_inc: pd.DataFrame, target_month: int, rule: di
     params = rule.get("params", {}) or {}
     revenue_field = str(params.get("revenue_field") or "全额收入")
     cost_field = str(params.get("cost_field") or "成本合计")
+    min_cost_abs = float(params.get("min_cost_abs", 0))
     g = _base_month_agg(df_inc, target_month, params, [revenue_field, cost_field])
     if g.empty:
         return pd.DataFrame()
+    if min_cost_abs > 0:
+        # 规模过滤：成本太小的倒挂多为结算时点错位，不值得人工核对。
+        g = g[g[cost_field].abs() >= min_cost_abs]
+        if g.empty:
+            return pd.DataFrame()
     g["倒挂差额"] = g[cost_field] - g[revenue_field]
     g["亏损率"] = g.apply(lambda r: (float(r["倒挂差额"]) / float(r[revenue_field])) if float(r[revenue_field]) != 0 else float("nan"), axis=1)
     out = g[(g[revenue_field] > 0) & (g[cost_field] > 0) & (g[revenue_field] < g[cost_field])].copy()
@@ -288,11 +300,19 @@ def _headcount_rev_mismatch_income(df_inc: pd.DataFrame, target_month: int, rule
     revenue_field = str(params.get("revenue_field") or "净额收入")
     headcount_field = str(params.get("headcount_field") or "结算人次")
     income_min = float(params.get("income_min", 1000))
-    g = _base_month_agg(df_inc, target_month, params, [revenue_field, headcount_field])
+    cost_field = str(params.get("cost_field") or "成本合计")
+    min_cost_abs = float(params.get("min_cost_abs", 0))
+    num_fields = [revenue_field, headcount_field]
+    if min_cost_abs > 0:
+        num_fields.append(cost_field)
+    g = _base_month_agg(df_inc, target_month, params, num_fields)
     if g.empty:
         return pd.DataFrame()
     eps = 1e-9
     m_hc_no_rev = (g[headcount_field] > eps) & (g[revenue_field].abs() <= eps)
+    if min_cost_abs > 0 and cost_field in g.columns:
+        # 规模过滤：没收入但有结算人的组合，只有成本达到一定规模才值得核对（漏结算影响有限）。
+        m_hc_no_rev &= g[cost_field].abs() >= min_cost_abs
     m_rev_no_hc = (g[headcount_field].abs() <= eps) & (g[revenue_field].abs() > income_min)
     parts: list[pd.DataFrame] = []
     p1 = g[m_hc_no_rev].copy()
@@ -343,10 +363,16 @@ def _cost_ratio_high_income(df_inc: pd.DataFrame, target_month: int, rule: dict[
     params = rule.get("params", {}) or {}
     revenue_field = str(params.get("revenue_field") or "全额收入")
     ratios = params.get("ratios") or []
+    min_revenue = float(params.get("min_revenue", 0))
     num_fields = [revenue_field] + [str(r.get("field")) for r in ratios if isinstance(r, dict) and r.get("field")]
     g = _base_month_agg(df_inc, target_month, params, num_fields)
     if g.empty:
         return pd.DataFrame()
+    if min_revenue > 0:
+        # 分母保护：收入规模太小的组合，占比指标全是噪声。
+        g = g[g[revenue_field].abs() >= min_revenue]
+        if g.empty:
+            return pd.DataFrame()
     parts: list[pd.DataFrame] = []
     for it in ratios:
         if not isinstance(it, dict):
@@ -378,9 +404,15 @@ def _expense_ratio_income(df_inc: pd.DataFrame, target_month: int, rule: dict[st
     welfare_ratio = float(params.get("welfare_ratio", 0.03))
     welfare_abs = float(params.get("welfare_abs", 50000))
     other_ratio = float(params.get("other_ratio", 0.10))
+    min_revenue = float(params.get("min_revenue", 0))
     g = _base_month_agg(df_inc, target_month, params, [revenue_field, welfare_field, other_field])
     if g.empty:
         return pd.DataFrame()
+    if min_revenue > 0:
+        # 分母保护：只对收入规模够大的组合比较占比，避免小组合噪声。
+        g = g[g[revenue_field].abs() >= min_revenue]
+        if g.empty:
+            return pd.DataFrame()
     parts: list[pd.DataFrame] = []
     p1 = g[(g[welfare_field].abs() > 0) & (g[revenue_field].abs() > 0) & (g[welfare_field].abs() > g[revenue_field].abs() * welfare_ratio)].copy()
     if not p1.empty:
@@ -462,6 +494,7 @@ def _mom_change_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, 
     revenue_th = float(params.get("revenue_threshold", 1.0))
     cost_th = float(params.get("cost_threshold", 1.0))
     gm_th = float(params.get("gm_threshold", 0.3))
+    min_abs = float(params.get("min_abs", 0))
     group_fields = [str(x) for x in (params.get("group_fields") or ["主体账簿", "三级科目", "实际客户", "部门"])]
     num_fields = [revenue_field, cost_field, profit_field]
     for c in group_fields + ["月"] + num_fields:
@@ -486,6 +519,11 @@ def _mom_change_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, 
     m = cur.merge(prev_g, on=group_fields, how="inner")
     if m.empty:
         return pd.DataFrame()
+    if min_abs > 0:
+        # 规模过滤：组合太小（本月 max(收入,成本) 低于阈值）的环比波动多为正常业务抖动。
+        m = m[m[[revenue_field, cost_field]].abs().max(axis=1) >= min_abs]
+        if m.empty:
+            return pd.DataFrame()
     m["收入变动率"] = m.apply(lambda r: (r[revenue_field] - r[revenue_field + "_prev"]) / r[revenue_field + "_prev"] if float(r[revenue_field + "_prev"]) != 0 else float("nan"), axis=1)
     m["成本变动率"] = m.apply(lambda r: (r[cost_field] - r[cost_field + "_prev"]) / r[cost_field + "_prev"] if float(r[cost_field + "_prev"]) != 0 else float("nan"), axis=1)
     m["毛利率"] = m.apply(lambda r: (r[profit_field] / r[revenue_field]) if float(r[revenue_field]) != 0 else float("nan"), axis=1)
@@ -510,6 +548,12 @@ def _mom_change_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, 
     if not parts:
         return pd.DataFrame()
     out = pd.concat(parts, ignore_index=True)
+    # 同一组合的收入/成本/毛利率多条命中合并为一条（原因拼接），避免同一组合重复占报告行。
+    out["_gkey"] = out.groupby(group_fields, dropna=False).ngroup()
+    merged_reasons = out.groupby("_gkey")["命中原因"].apply(lambda s: "；".join(s)).to_dict()
+    out = out.drop_duplicates(subset=group_fields, keep="first")
+    out["命中原因"] = out["_gkey"].map(merged_reasons)
+    out = out.drop(columns=["_gkey"])
     return _annotate_hits(out, rule, "", revenue_field)
 
 
@@ -578,6 +622,7 @@ def _similar_customer_rename_income(df_inc: pd.DataFrame, target_month: int, rul
     """疑似客商改名：历史月有、本月消失的客户 + 本月新出现且名字相似的新客户。"""
     params = rule.get("params", {}) or {}
     min_common_chars = int(params.get("min_common_chars", 4))
+    min_amount = float(params.get("min_amount", 0))
     if "实际客户" not in df_inc.columns:
         return pd.DataFrame()
     df = df_inc.copy()
@@ -587,6 +632,11 @@ def _similar_customer_rename_income(df_inc: pd.DataFrame, target_month: int, rul
     cur = df[df["_m"] == tgt]
     if hist.empty or cur.empty:
         return pd.DataFrame()
+    # 金额门槛：只关注规模够大的客户改名（小客户改名没有审计价值）。
+    amt_by_cust: dict[str, float] = {}
+    if min_amount > 0 and "全额收入" in df.columns:
+        amt = pd.to_numeric(df["全额收入"], errors="coerce").fillna(0.0).abs()
+        amt_by_cust = amt.groupby([df["_m"], df["实际客户"].astype(str).str.strip()]).sum().to_dict()
     hist_cust = set(str(x).strip() for x in hist["实际客户"].dropna().unique() if str(x).strip())
     cur_cust = set(str(x).strip() for x in cur["实际客户"].dropna().unique() if str(x).strip())
     gone = hist_cust - cur_cust
@@ -605,6 +655,11 @@ def _similar_customer_rename_income(df_inc: pd.DataFrame, target_month: int, rul
             if score > best_score:
                 best, best_score = gv, score
         if best_score >= min_common_chars:
+            if min_amount > 0 and amt_by_cust:
+                new_amt = amt_by_cust.get((tgt, nv), 0.0)
+                old_amt = amt_by_cust.get((tgt - 1, best), 0.0)
+                if max(new_amt, old_amt) < min_amount:
+                    continue
             matched.append({"旧客户名": best, "实际客户": nv, "共同字符数": best_score})
     if not matched:
         return pd.DataFrame()
@@ -728,6 +783,7 @@ def _rev_cost_biz_type_mismatch_income(df_inc: pd.DataFrame, target_month: int, 
     revenue_field = str(params.get("revenue_field") or "全额收入")
     cost_field = str(params.get("cost_field") or "成本合计")
     min_amount = float(params.get("min_amount", 1000))
+    min_combo_amount = float(params.get("min_combo_amount", 0))
     for c in group_fields + [biz_field, revenue_field, cost_field]:
         if c not in df_inc.columns:
             return pd.DataFrame()
@@ -737,6 +793,14 @@ def _rev_cost_biz_type_mismatch_income(df_inc: pd.DataFrame, target_month: int, 
     cur[biz_field] = cur[biz_field].map(_strip_percent_suffix)
     cur[revenue_field] = pd.to_numeric(cur[revenue_field], errors="coerce").fillna(0.0)
     cur[cost_field] = pd.to_numeric(cur[cost_field], errors="coerce").fillna(0.0)
+    if min_combo_amount > 0:
+        # 组合级规模过滤：客户总业务量太小（收入+成本低于阈值）时类型不一致没有审计价值。
+        combo_tot = cur.groupby(group_fields, dropna=False)[[revenue_field, cost_field]].sum()
+        combo_tot["__total"] = combo_tot[revenue_field].abs() + combo_tot[cost_field].abs()
+        keep = combo_tot[combo_tot["__total"] >= min_combo_amount].reset_index()[group_fields]
+        cur = cur.merge(keep, on=group_fields, how="inner")
+        if cur.empty:
+            return pd.DataFrame()
     cur = cur[(cur[revenue_field].abs() > min_amount) | (cur[cost_field].abs() > min_amount)]
     if cur.empty:
         return pd.DataFrame()

@@ -43,7 +43,7 @@ checks:
     type: rev_cost_zero_mismatch
     scope: income_cost
     severity: "错误"
-    description: "仅对业务类型（三级科目）包含：劳务派遣/外包/加工业务/加工劳务/人事代理 的组合，检查是否出现：净额收入=0但成本合计≠0，或成本合计=0但净额收入≠0。"
+    description: "仅对业务类型（三级科目）包含：劳务派遣/外包/加工业务/加工劳务/人事代理 的组合，检查是否出现：净额收入=0但成本合计≠0，或成本合计=0但净额收入≠0。非零一侧金额≥5万才提示（小额尾差多为结算时点错位，不值得核对）。"
     source:
       doc: "（一致性校验）"
       clause: "收入/成本同向性"
@@ -55,6 +55,7 @@ checks:
       biz_type_field: "三级科目"
       biz_type_keywords: ["劳务派遣", "外包", "加工业务", "加工劳务", "人事代理"]
       biz_type_strip_percent_suffix: true
+      min_amount: 50000
 
 
   - id: AUX_HEADCOUNT_DATA_CHECK
@@ -141,26 +142,26 @@ checks:
           tolerance_ratio: 0.3
           eps: 1e-9
           guard_field: "净额收入"
-          min_guard: 10000
+          min_guard: 50000
         - name: "单人毛利"
           kind: ratio
           numerator: "项目毛利润"
           denominator: "结算人次"
-          tolerance_ratio: 0.3
+          tolerance_ratio: 0.5
           eps: 1e-9
           guard_field: "净额收入"
-          min_guard: 10000
+          min_guard: 50000
         - name: "项目返费"
           kind: value
           field: "项目返费"
           tolerance_ratio: 0.3
-          min_abs: 10000
+          min_abs: 50000
           eps: 100
         - name: "第三方挂靠成本"
           kind: value
           field: "第三方挂靠成本"
           tolerance_ratio: 0.3
-          min_abs: 10000
+          min_abs: 50000
           eps: 100
         - name: "项目返费/净额收入"
           kind: ratio
@@ -168,12 +169,16 @@ checks:
           denominator: "净额收入"
           tolerance_ratio: 0.5
           eps: 0.01
+          guard_field: "净额收入"
+          min_guard: 50000
         - name: "第三方挂靠成本/全额收入"
           kind: ratio
           numerator: "第三方挂靠成本"
           denominator: "全额收入"
           tolerance_ratio: 0.5
           eps: 0.01
+          guard_field: "全额收入"
+          min_guard: 50000
 
   # ⑥ 环比波动（vs 上月，与同比波动互补）
   - id: INC_MOM_CHANGE
@@ -181,7 +186,7 @@ checks:
     type: mom_change
     scope: income_cost
     severity: "需确认"
-    description: "以（主体账簿+三级科目+实际客户+部门）为主键，与上月对比：收入/成本变动超过100%，或毛利率变动超过30个百分点，提示核对业务或记账口径。"
+    description: "以（主体账簿+三级科目+实际客户+部门）为主键，与上月对比：收入/成本变动超过100%，或毛利率变动超过30个百分点，提示核对业务或记账口径。仅对本月 max(收入,成本)≥5万 的组合提示；同一组合多项指标命中合并为一条。"
     source:
       doc: "（同比波动）"
       clause: "环比稳定性"
@@ -193,6 +198,7 @@ checks:
       revenue_threshold: 1.0
       cost_threshold: 1.0
       gm_threshold: 0.3
+      min_abs: 50000
 
   # ⑦ 高毛利率（疑似少入成本）
   - id: INC_GM_HIGH_RATIO
@@ -200,7 +206,7 @@ checks:
     type: gm_high_ratio
     scope: income_cost
     severity: "需确认"
-    description: "除去部门=集团本部：同一（主体账簿+月+三级科目+实际客户）若毛利率>50%，提示核对是否少入成本/漏记成本。"
+    description: "除去部门=集团本部：同一（主体账簿+月+三级科目+实际客户）若毛利率>50% 且全额收入≥5万，提示核对是否少入成本/漏记成本。"
     source:
       doc: "（异常阈值）"
       clause: "高毛利率"
@@ -210,7 +216,7 @@ checks:
       net_revenue_field: "净额收入"
       profit_field: "项目毛利润"
       threshold: 0.5
-      min_revenue: 10000
+      min_revenue: 50000
 
   # ⑧ 收入成本倒挂（收入<成本且均非零）
   - id: INC_REV_COST_INVERSION
@@ -218,7 +224,7 @@ checks:
     type: rev_cost_inversion
     scope: income_cost
     severity: "需确认"
-    description: "除去部门=集团本部：同一组合全额收入与成本合计均为非零，且收入<成本，提示核对错记或错期。"
+    description: "除去部门=集团本部：同一组合全额收入与成本合计均为非零，且收入<成本且成本合计≥5万，提示核对错记或错期（小额倒挂多为结算时点错位）。"
     source:
       doc: "（一致性校验）"
       clause: "收入成本倒挂"
@@ -226,6 +232,7 @@ checks:
       group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门", "项目"]
       revenue_field: "全额收入"
       cost_field: "成本合计"
+      min_cost_abs: 50000
 
   # ⑨ 结算人次与收入背离
   - id: INC_HEADCOUNT_REV_MISMATCH
@@ -233,7 +240,7 @@ checks:
     type: headcount_rev_mismatch
     scope: income_cost
     severity: "需确认"
-    description: "除去部门=集团本部：结算人次>0但净额收入=0，或净额收入>1000但结算人次=0，提示核对结算单。"
+    description: "除去部门=集团本部：结算人次>0但净额收入=0且成本合计≥5万，或净额收入>1万但结算人次=0，提示核对结算单。"
     source:
       doc: "（一致性校验）"
       clause: "人次与收入配比"
@@ -241,7 +248,8 @@ checks:
       group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门"]
       revenue_field: "净额收入"
       headcount_field: "结算人次"
-      income_min: 1000
+      income_min: 10000
+      min_cost_abs: 50000
 
   # ⑩ 社保人数异常
   - id: INC_SOCIAL_HEADCOUNT_MISMATCH
@@ -265,13 +273,14 @@ checks:
     type: cost_ratio_high
     scope: income_cost
     severity: "需确认"
-    description: "除去部门=集团本部：项目返费占全额收入>50%，或第三方挂靠成本占全额收入>30%，提示核对科目与金额。"
+    description: "除去部门=集团本部：项目返费占全额收入>50%，或第三方挂靠成本占全额收入>30%，且全额收入≥5万，提示核对科目与金额（小额组合占比失真）。"
     source:
       doc: "（异常阈值）"
       clause: "返费挂靠占比"
     params:
       group_fields: ["主体账簿", "月", "三级科目", "实际客户", "部门"]
       revenue_field: "全额收入"
+      min_revenue: 50000
       ratios:
         - {field: "项目返费", threshold: 0.5}
         - {field: "第三方挂靠成本", threshold: 0.3}
@@ -282,7 +291,7 @@ checks:
     type: expense_ratio
     scope: income_cost
     severity: "需确认"
-    description: "除去部门=集团本部：项目福利费占全额收入>3%或绝对值>5万，项目其他费用占全额收入>10%，提示核对科目错记。"
+    description: "除去部门=集团本部：项目福利费占全额收入>3%或绝对值>5万，项目其他费用占全额收入>10%（占比方向仅对收入≥5万的组合提示），提示核对科目错记。"
     source:
       doc: "（异常阈值）"
       clause: "费用占比"
@@ -294,6 +303,7 @@ checks:
       welfare_ratio: 0.03
       welfare_abs: 50000
       other_ratio: 0.10
+      min_revenue: 50000
 
   # ⑬ 成本项目突然出现
   - id: INC_COST_SUDDEN_APPEARANCE
@@ -331,7 +341,7 @@ checks:
     type: group_hq_unsettled
     scope: income_cost
     severity: "错误"
-    description: "集团本部行按主体+科目+客户归总后仍有大额余额（暂估成本可能没冲完/没调整到实际部门），提示核对账外调整。"
+    description: "集团本部行按主体+科目+客户归总后仍有大额余额（≥5万，暂估成本可能没冲完/没调整到实际部门），提示核对账外调整。"
     source:
       doc: "（登记表）"
       clause: "集团本部暂估未调整"
@@ -339,7 +349,7 @@ checks:
       hq_dept_value: "集团本部"
       group_fields: ["主体账簿", "三级科目", "实际客户"]
       amount_field: "成本合计"
-      min_abs: 10000
+      min_abs: 50000
 
   # ⑯ 疑似客商改名（登记表序34）
   - id: INC_SIMILAR_CUSTOMER_RENAME
@@ -347,12 +357,13 @@ checks:
     type: similar_customer_rename
     scope: income_cost
     severity: "需确认"
-    description: "历史月有、本月消失的客户，与本月新出现且名字相似（公共字符≥4）的客户配对，提示可能是改名——账上直接改客商名称，不要新增客商。"
+    description: "历史月有、本月消失的客户，与本月新出现且名字相似（公共字符≥4）的客户配对，且新客户本月收入或旧客户上月收入≥5万，提示可能是改名——账上直接改客商名称，不要新增客商。"
     source:
       doc: "（登记表）"
       clause: "客商更名"
     params:
       min_common_chars: 4
+      min_amount: 50000
 
   # ⑰ 序时账工资/社保行客户挂错（登记表序6）
   - id: AUX_WAGE_WRONG_CUSTOMER
@@ -375,7 +386,7 @@ checks:
     type: mixed_biz_type
     scope: income_cost
     severity: "需确认"
-    description: "同一（主体账簿+月+账载客户）出现 2 种及以上业务类型（如外包+代理招聘），且收入≥1万，可能合同换签了但账上没同步。"
+    description: "同一（主体账簿+月+账载客户）出现 2 种及以上业务类型（如外包+代理招聘），且收入≥5万，可能合同换签了但账上没同步。"
     source:
       doc: "（登记表）"
       clause: "业务类型混做"
@@ -383,7 +394,7 @@ checks:
       group_fields: ["主体账簿", "月", "账载客户"]
       biz_type_field: "三级科目"
       amount_field: "全额收入"
-      min_gross_revenue: 10000
+      min_gross_revenue: 50000
 
   # ⑲ 收入成本业务类型错位（登记表-1 序：山东理想"收入、成本业务类型不一致"）
   - id: INC_REV_COST_BIZ_TYPE_MISMATCH
@@ -391,7 +402,7 @@ checks:
     type: rev_cost_biz_type_mismatch
     scope: income_cost
     severity: "错误"
-    description: "同一（主体账簿+实际客户）下，有收入行的业务类型集合与有成本行的业务类型集合不一致（如收入记劳务派遣、成本记外包），提示有一边记错。"
+    description: "同一（主体账簿+实际客户）下，有收入行的业务类型集合与有成本行的业务类型集合不一致（如收入记劳务派遣、成本记外包），且该客户本月收入+成本合计≥5万，提示有一边记错。"
     source:
       doc: "（登记表）"
       clause: "收入成本业务类型不一致"
@@ -400,7 +411,8 @@ checks:
       biz_type_field: "三级科目"
       revenue_field: "全额收入"
       cost_field: "成本合计"
-      min_amount: 1000
+      min_amount: 10000
+      min_combo_amount: 50000
 
   # ⑳ 相邻月同金额（登记表-1 序：苏州旭创"6月7月暂估了同样金额，是不是重复估了"）
   - id: INC_SAME_AMOUNT_ADJACENT_MONTHS
@@ -408,14 +420,14 @@ checks:
     type: same_amount_adjacent_months
     scope: income_cost
     severity: "需确认"
-    description: "同一组合键在（目标月、上月）的收入或成本完全相等且≥1万，可能重复暂估/重复确认，也可能是真实没变化，需人工确认。"
+    description: "同一组合键在（目标月、上月）的收入或成本完全相等且≥5万，可能重复暂估/重复确认，也可能是真实没变化，需人工确认（小额固定费用每月相同属正常）。"
     source:
       doc: "（登记表）"
       clause: "跨月同金额暂估"
     params:
       key_fields: ["主体账簿", "三级科目", "账载客户", "实际客户", "部门", "项目"]
       amount_fields: ["全额收入", "成本合计"]
-      min_amount: 10000
+      min_amount: 50000
 
   # ㉑ 小额成本挂错部门（登记表-1 序：云强"为啥有1100成本在淄博项目部"）
   - id: INC_SMALL_AMOUNT_WRONG_DEPT

@@ -68,7 +68,7 @@ _TYPE_REQUIRED_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
         "income": ("主体账簿", "月", "三级科目", "实际客户", "部门", "项目", "全额收入", "成本合计"),
     },
     "headcount_rev_mismatch": {
-        "income": ("主体账簿", "月", "三级科目", "实际客户", "部门", "净额收入", "结算人次"),
+        "income": ("主体账簿", "月", "三级科目", "实际客户", "部门", "净额收入", "结算人次", "成本合计"),
     },
     "social_headcount_mismatch": {
         "income": ("主体账簿", "月", "三级科目", "实际客户", "部门", "净额收入", "社保人数", "社保"),
@@ -91,7 +91,7 @@ _TYPE_REQUIRED_COLUMNS: dict[str, dict[str, tuple[str, ...]]] = {
         "income": ("主体账簿", "月", "部门", "三级科目", "实际客户", "成本合计"),
     },
     "similar_customer_rename": {
-        "income": ("实际客户", "月"),
+        "income": ("实际客户", "月", "全额收入"),
     },
     "aux_wage_wrong_customer": {
         "aux": ("主体账簿", "月", "账载客户", "部门", "实际客户", "摘要", "三级科目", "本币"),
