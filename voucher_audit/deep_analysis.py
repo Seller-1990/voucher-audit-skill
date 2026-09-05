@@ -114,6 +114,10 @@ def _group_hits_by_customer_key(
         book = _norm_text(h.get("主体账簿"))
         biz = _norm_biz(h.get("三级科目"))
         cust = _norm_text(h.get("实际客户"))
+        if not cust:
+            # 归属一致性/主体切换/混做等规则按"账载客户"分组，命中行没有实际客户——
+            # 回退到账载客户做关联键，否则这些命中全部落到空键，客户级根因归并失效。
+            cust = _norm_text(h.get("账载客户")) or _norm_text(h.get("旧客户名")) or "(客户未知)"
         sev = _norm_text(h.get("严重度")) or "需确认"
         reason = _norm_text(h.get("命中原因"))
         if rule_id == _PP_RULE_ID:
@@ -176,6 +180,60 @@ def _detect_pattern(rules_hit: set[str], zero_reasons: set[str]) -> str:
     if not tags and (has_zero or has_out or has_gm or has_cc or has_pp):
         tags.append("单规则命中")
     return "；".join(tags)
+
+
+def _detect_root_cause(rules_hit: set[str], zero_reasons: set[str]) -> tuple[str, str]:
+    """多规则命中时推断底层根因：同一个错误（如实际客户没修正）会连锁触发多条规则。
+
+    返回 (根因推断, 建议动作)。修掉根因后，同组合的同源命中大概率一起消失——
+    先修根因、再重跑，能避免对失真命中的无效人工核对。无多规则命中返回空串。
+    """
+    if len(rules_hit) < 2:
+        return "", ""
+    has_cc = "INC_CUSTOMER_CONSISTENCY" in rules_hit
+    has_entity = "INC_ENTITY_SWITCH_MAPPING_DRIFT" in rules_hit
+    has_rename = "INC_SIMILAR_CUSTOMER_RENAME" in rules_hit
+    has_mom = "INC_MOM_CHANGE" in rules_hit
+    has_pp = _PP_RULE_ID in rules_hit
+    has_gm = "INC_GM_HIGH_RATIO" in rules_hit
+    has_neg_gm = "INC_NEG_GM_HIGH_RATIO" in rules_hit
+    has_inv = "INC_REV_COST_INVERSION" in rules_hit
+    has_zero = "INC_REV_COST_ZERO_MISMATCH" in rules_hit
+    has_hc = "INC_HEADCOUNT_REV_MISMATCH" in rules_hit
+    has_hq = "INC_GROUP_HQ_UNSETTLED" in rules_hit
+    has_same = "INC_SAME_AMOUNT_ADJACENT_MONTHS" in rules_hit
+    has_out = "INC_OUTSOURCING_NO_WAGE_OR_HANGKAO" in rules_hit
+    has_mixed = "INC_MIXED_BIZ_TYPE" in rules_hit
+    has_biz_mm = "INC_REV_COST_BIZ_TYPE_MISMATCH" in rules_hit
+    has_aux_wage = "AUX_WAGE_WRONG_CUSTOMER" in rules_hit
+    any_data = has_mom or has_pp or has_gm or has_neg_gm or has_inv or has_zero or has_hc
+
+    # ① 归属/映射未修正：数据被拆挂到不同实际客户/主体名下，历史基线与当月口径都对不上，
+    #    波动/毛利率/人数/零值等数据型命中连锁出现——先修映射再重跑。
+    if (has_cc or has_entity) and (any_data or has_mixed):
+        return ("疑似实际客户/映射未修正引发的连锁命中",
+                "先核对客户调整校验映射并修正实际客户归属，修正后重跑——本组合的波动/毛利率/人数/零值等命中大概率随之消失，不要逐条核对失真命中")
+    # ② 客商改名未处理：新旧客商并存，历史基线断开。
+    if has_rename and (any_data or has_entity):
+        return ("疑似客商改名未处理引发的连锁命中",
+                "确认更名后直接修改客商名称（不要新增客商），改名后历史基线接上，波动/毛利命中大概率消失")
+    # ③ 业务类型记错：类型错位+混做+类型级毛利异常同源。
+    if has_biz_mm and (has_mixed or has_gm or has_zero):
+        return ("疑似业务类型记错引发的连锁命中",
+                "先统一该客户收入/成本侧的业务类型（三级科目），更正后混做/毛利偏高/零值命中大概率消失")
+    # ④ 暂估未冲销：跨月同金额+集团本部挂账（或有成本无收入）是重复暂估特征。
+    if has_hq and (has_same or (has_zero and _ZERO_REASON_COST in zero_reasons) or has_mom):
+        return ("疑似暂估/预提未冲销引发的连锁命中",
+                "先核暂估成本是否重复计提并冲销（跨月同金额+集团本部挂账为特征），冲销后同金额/零值/挂账命中大概率消失")
+    # ⑤ 外包成本漏记：成本结构缺失导致毛利率/倒挂异常。
+    if has_out and (has_gm or has_inv or has_neg_gm):
+        return ("疑似外包成本漏记引发的连锁命中",
+                "先核对外包合同工资/挂靠成本完整性并补记，补记后毛利率/倒挂命中大概率消失")
+    # ⑥ 序时账工资挂错客户：客户成本口径失真。
+    if has_aux_wage and (has_cc or has_hc or has_gm):
+        return ("疑似工资挂错客户引发的连锁命中",
+                "先按映射表修正序时账工资/社保行的实际客户，修正后该客户成本与毛利口径恢复正常")
+    return ("", "")
 
 
 def build_rule_correlation_sheet(
@@ -249,6 +307,8 @@ def build_rule_correlation_sheet(
         if (book, biz) in pp_keys:
             reason_texts.append("[同比波动(键级)] 该（主体账簿+三级科目）键命中同比波动，需结合客户级数据核查")
 
+        root_cause, root_action = _detect_root_cause(rules_hit, zero_reasons)
+
         rows.append({
             "主体账簿": book,
             "三级科目": biz,
@@ -257,6 +317,9 @@ def build_rule_correlation_sheet(
             "命中规则数": rule_cnt,
             "命中规则": "；".join(rule_texts),
             "模式标签": _detect_pattern(rules_hit, zero_reasons),
+            "根因推断（可能同源）": root_cause,
+            "建议处理顺序": ("P0 先修根因" if root_cause else ("P1 单独核对" if risk == "高" else "P2 常规核对")),
+            "根因修复建议": root_action,
             "错误数": err_cnt,
             "需确认数": confirm_cnt,
             "本月全额收入": _fmt_num(m.get("全额收入")),
@@ -271,12 +334,15 @@ def build_rule_correlation_sheet(
     if not rows:
         return pd.DataFrame()
     out = pd.DataFrame(rows)
+    # 有根因推断的组合排最前：修一个根因可批量消除同源命中，人工核对收益最大。
+    out["_root_rank"] = (out["根因推断（可能同源）"] != "").map({True: 0, False: 1})
     risk_rank = {"高": 0, "中": 1, "低": 2}
     out = out.sort_values(
-        by=["综合风险", "命中规则数", "本月净额收入"],
-        key=lambda s: s.map(risk_rank).fillna(3) if s.name == "综合风险" else s,
-        ascending=[True, False, False],
+        by=["_root_rank", "综合风险", "命中规则数", "本月净额收入"],
+        key=lambda s: (s.map(risk_rank).fillna(3) if s.name == "综合风险" else s),
+        ascending=[True, True, False, False],
     )
+    out = out.drop(columns=["_root_rank"])
     return out.reset_index(drop=True)
 
 
