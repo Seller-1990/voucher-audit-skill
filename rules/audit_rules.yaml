@@ -299,7 +299,7 @@ checks:
     type: expense_ratio
     scope: income_cost
     severity: "需确认"
-    description: "除去部门=集团本部：项目福利费占全额收入>3%或绝对值>5万，项目其他费用占全额收入>10%（占比方向仅对收入≥3万的组合提示），提示核对科目错记。"
+    description: "除去部门=集团本部：项目福利费占全额收入>3%或绝对值>5万，项目其他费用占全额收入>10%（占比方向仅对收入≥3万且费用为正值的组合提示，负费用属红冲不报占比），提示核对科目错记。"
     source:
       doc: "（异常阈值）"
       clause: "费用占比"
@@ -394,7 +394,7 @@ checks:
     type: mixed_biz_type
     scope: income_cost
     severity: "需确认"
-    description: "同一（主体账簿+月+账载客户）出现 2 种及以上业务类型（如外包+代理招聘），且收入≥3万，可能合同换签了但账上没同步。"
+    description: "同一（主体账簿+月+账载客户）出现 2 种及以上业务类型（如外包+代理招聘），且每种类型本月收入≥5千、客户收入合计≥3万，可能合同换签了但账上没同步（零金额占位行/红冲净零行/零星串科目不算一种业务）。"
     source:
       doc: "（登记表）"
       clause: "业务类型混做"
@@ -403,6 +403,7 @@ checks:
       biz_type_field: "三级科目"
       amount_field: "全额收入"
       min_gross_revenue: 30000
+      min_type_amount: 5000
 
   # ⑲ 收入成本业务类型错位（登记表-1 序：山东理想"收入、成本业务类型不一致"）
   - id: INC_REV_COST_BIZ_TYPE_MISMATCH
@@ -410,7 +411,7 @@ checks:
     type: rev_cost_biz_type_mismatch
     scope: income_cost
     severity: "错误"
-    description: "同一（主体账簿+实际客户）下，有收入行的业务类型集合与有成本行的业务类型集合不一致（如收入记劳务派遣、成本记外包），且该客户本月收入+成本合计≥3万，提示有一边记错。"
+    description: "同一（主体账簿+实际客户）下，有收入行的业务类型集合与有成本行的业务类型集合不一致（如收入记劳务派遣、成本记外包），且该客户本月收入+成本合计≥3万，提示有一边记错。收入侧独有的猎聘/代理招聘不算差异（按单收费本无直接成本）。"
     source:
       doc: "（登记表）"
       clause: "收入成本业务类型不一致"
@@ -421,6 +422,7 @@ checks:
       cost_field: "成本合计"
       min_amount: 10000
       min_combo_amount: 30000
+      ignore_rev_only_types: ["猎聘", "代理招聘"]
 
   # ⑳ 相邻月同金额（登记表-1 序：苏州旭创"6月7月暂估了同样金额，是不是重复估了"）
   - id: INC_SAME_AMOUNT_ADJACENT_MONTHS

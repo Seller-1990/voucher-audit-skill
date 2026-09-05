@@ -439,7 +439,8 @@ def _expense_ratio_income(df_inc: pd.DataFrame, target_month: int, rule: dict[st
         if g.empty:
             return pd.DataFrame()
     parts: list[pd.DataFrame] = []
-    p1 = g[(g[welfare_field].abs() > 0) & (g[revenue_field].abs() > 0) & (g[welfare_field].abs() > g[revenue_field].abs() * welfare_ratio)].copy()
+    # 占比方向只认正费用：负费用是红冲，红冲后净占比失真不属"记错科目"（绝对值方向仍会另报）。
+    p1 = g[(g[welfare_field] > 0) & (g[revenue_field].abs() > 0) & (g[welfare_field] > g[revenue_field].abs() * welfare_ratio)].copy()
     if not p1.empty:
         p1["指标值"] = p1[welfare_field]
         p1["命中原因"] = p1.apply(lambda r: f"福利费 {_fmt_money(r[welfare_field])} 元，占收入比例超过 {welfare_ratio:.0%}（可能记错科目）", axis=1)
@@ -449,7 +450,7 @@ def _expense_ratio_income(df_inc: pd.DataFrame, target_month: int, rule: dict[st
         p2["指标值"] = p2[welfare_field]
         p2["命中原因"] = p2.apply(lambda r: f"福利费 {_fmt_money(r[welfare_field])} 元，金额超过 {welfare_abs:,.0f} 元", axis=1)
         parts.append(p2)
-    p3 = g[(g[other_field].abs() > 0) & (g[revenue_field].abs() > 0) & (g[other_field].abs() > g[revenue_field].abs() * other_ratio)].copy()
+    p3 = g[(g[other_field] > 0) & (g[revenue_field].abs() > 0) & (g[other_field] > g[revenue_field].abs() * other_ratio)].copy()
     if not p3.empty:
         p3["指标值"] = p3[other_field]
         p3["命中原因"] = p3.apply(lambda r: f"其他费用 {_fmt_money(r[other_field])} 元，占收入比例超过 {other_ratio:.0%}（可能记错科目）", axis=1)
@@ -787,6 +788,7 @@ def _mixed_biz_type_income(df_inc: pd.DataFrame, target_month: int, rule: dict[s
     biz_field = str(params.get("biz_type_field") or "三级科目")
     amount_field = str(params.get("amount_field") or "全额收入")
     min_gross = float(params.get("min_gross_revenue", 10000))
+    min_type_amount = float(params.get("min_type_amount", 0))
     for c in group_fields + [biz_field, amount_field]:
         if c not in df_inc.columns:
             return pd.DataFrame()
@@ -796,8 +798,14 @@ def _mixed_biz_type_income(df_inc: pd.DataFrame, target_month: int, rule: dict[s
     if "三级科目" in cur.columns:
         cur["三级科目"] = cur["三级科目"].map(_strip_percent_suffix)
     cur[amount_field] = pd.to_numeric(cur[amount_field], errors="coerce").fillna(0.0)
-    g = cur.groupby(group_fields, dropna=False).agg(
-        types=(biz_field, lambda s: "、".join(sorted(set(str(x) for x in s.dropna() if str(x).strip())))),
+    # 先按类型聚合金额：金额低于 min_type_amount 的类型（零金额占位行/红冲净零行/零星串科目）不算一种业务。
+    by_type = cur.groupby(group_fields + [biz_field], dropna=False)[amount_field].sum().reset_index()
+    if min_type_amount > 0:
+        by_type = by_type[by_type[amount_field].abs() >= min_type_amount]
+        if by_type.empty:
+            return pd.DataFrame()
+    g = by_type.groupby(group_fields, dropna=False).agg(
+        types=(biz_field, lambda s: "、".join(sorted(set(str(x) for x in s)))),
         n_types=(biz_field, "nunique"),
         gross=(amount_field, "sum"),
     ).reset_index()
@@ -822,6 +830,7 @@ def _rev_cost_biz_type_mismatch_income(df_inc: pd.DataFrame, target_month: int, 
     cost_field = str(params.get("cost_field") or "成本合计")
     min_amount = float(params.get("min_amount", 1000))
     min_combo_amount = float(params.get("min_combo_amount", 0))
+    ignore_rev_only_types = [str(x) for x in (params.get("ignore_rev_only_types") or [])]
     for c in group_fields + [biz_field, revenue_field, cost_field]:
         if c not in df_inc.columns:
             return pd.DataFrame()
@@ -849,6 +858,13 @@ def _rev_cost_biz_type_mismatch_income(df_inc: pd.DataFrame, target_month: int, 
     out = g[(g["rev_types"].map(len) > 0) & (g["cost_types"].map(len) > 0) & (g["rev_types"] != g["cost_types"])].copy()
     if out.empty:
         return pd.DataFrame()
+    if ignore_rev_only_types:
+        # 收入侧独有的按单收费类型（猎聘/代理招聘）本无直接成本，"收入有、成本无"属正常，不构成错位。
+        out["rev_types"] = out["rev_types"].apply(
+            lambda ts: [t for t in ts if not any(k in t for k in ignore_rev_only_types)])
+        out = out[(out["rev_types"].map(len) > 0) & (out["rev_types"] != out["cost_types"])]
+        if out.empty:
+            return pd.DataFrame()
     out["指标值"] = out.apply(lambda r: len(set(r["rev_types"]) ^ set(r["cost_types"])), axis=1)
     out["命中原因"] = out.apply(
         lambda r: (
