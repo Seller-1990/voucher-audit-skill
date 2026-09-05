@@ -253,6 +253,18 @@ def _gm_high_ratio_income(df_inc: pd.DataFrame, target_month: int, rule: dict[st
     min_revenue = float(params.get("min_revenue", 10000))
     revenue_field = str(params.get("revenue_field") or "全额收入")
     profit_field = str(params.get("profit_field") or "项目毛利润")
+    biz_type_field = str(params.get("biz_type_field") or "三级科目")
+    biz_type_thresholds = [
+        (ov.get("keywords") or [], float(ov.get("threshold", threshold)))
+        for ov in (params.get("biz_type_thresholds") or []) if isinstance(ov, dict)
+    ]
+
+    def _threshold_for(biz: Any) -> float:
+        for kws, th in biz_type_thresholds:
+            if kws and _match_contains_any(biz, [str(k) for k in kws]):
+                return th
+        return threshold
+
     g = _base_month_agg(df_inc, target_month, params, [revenue_field, profit_field])
     if g.empty:
         return pd.DataFrame()
@@ -260,7 +272,9 @@ def _gm_high_ratio_income(df_inc: pd.DataFrame, target_month: int, rule: dict[st
     if g.empty:
         return pd.DataFrame()
     g["毛利率"] = g.apply(lambda r: (r[profit_field] / r[revenue_field]) if float(r[revenue_field]) != 0 else float("nan"), axis=1)
-    out = g[(g["毛利率"].notna()) & (g["毛利率"] > threshold)].copy()
+    out = g[g["毛利率"].notna()].copy()
+    # 按业务类型取对应阈值（代理招聘/猎聘类天然高毛利，需更高阈值）。
+    out = out[out.apply(lambda r: r["毛利率"] > _threshold_for(r.get(biz_type_field)), axis=1)]
     if out.empty:
         return pd.DataFrame()
     out["指标值"] = out["毛利率"]
@@ -273,6 +287,7 @@ def _rev_cost_inversion_income(df_inc: pd.DataFrame, target_month: int, rule: di
     revenue_field = str(params.get("revenue_field") or "全额收入")
     cost_field = str(params.get("cost_field") or "成本合计")
     min_cost_abs = float(params.get("min_cost_abs", 0))
+    min_diff = float(params.get("min_diff", 0))
     g = _base_month_agg(df_inc, target_month, params, [revenue_field, cost_field])
     if g.empty:
         return pd.DataFrame()
@@ -286,6 +301,11 @@ def _rev_cost_inversion_income(df_inc: pd.DataFrame, target_month: int, rule: di
     out = g[(g[revenue_field] > 0) & (g[cost_field] > 0) & (g[revenue_field] < g[cost_field])].copy()
     if out.empty:
         return pd.DataFrame()
+    if min_diff > 0:
+        # 差额下限：亏得很少的倒挂只是毛利偏低，不是需要修正的错误。
+        out = out[out["倒挂差额"] >= min_diff]
+        if out.empty:
+            return pd.DataFrame()
     out["指标值"] = out["倒挂差额"]
     out["命中原因"] = out.apply(
         lambda r: f"收入{_fmt_money(r[revenue_field])}元 < 成本{_fmt_money(r[cost_field])}元，花的比挣的多{_fmt_money(r['倒挂差额'])}元（{f'{r['亏损率']*100:.1f}%'}）" if pd.notna(r["亏损率"]) else f"收入{_fmt_money(r[revenue_field])}元 < 成本{_fmt_money(r[cost_field])}元，花的比挣的多{_fmt_money(r['倒挂差额'])}元",
@@ -302,6 +322,8 @@ def _headcount_rev_mismatch_income(df_inc: pd.DataFrame, target_month: int, rule
     income_min = float(params.get("income_min", 1000))
     cost_field = str(params.get("cost_field") or "成本合计")
     min_cost_abs = float(params.get("min_cost_abs", 0))
+    biz_type_field = str(params.get("biz_type_field") or "三级科目")
+    p2_biz_keywords = [str(x) for x in (params.get("p2_biz_type_keywords") or [])]
     num_fields = [revenue_field, headcount_field]
     if min_cost_abs > 0:
         num_fields.append(cost_field)
@@ -314,13 +336,16 @@ def _headcount_rev_mismatch_income(df_inc: pd.DataFrame, target_month: int, rule
         # 规模过滤：没收入但有结算人的组合，只有成本达到一定规模才值得核对（漏结算影响有限）。
         m_hc_no_rev &= g[cost_field].abs() >= min_cost_abs
     m_rev_no_hc = (g[headcount_field].abs() <= eps) & (g[revenue_field].abs() > income_min)
+    p2 = g[m_rev_no_hc].copy()
+    if not p2.empty and p2_biz_keywords and biz_type_field in p2.columns:
+        # 猎聘/代理招聘类按单收费，本无按月结算人次，"有收入没人次"属正常，只检查按人头结算的类型。
+        p2 = p2[p2[biz_type_field].apply(lambda v: _match_contains_any(v, p2_biz_keywords))]
     parts: list[pd.DataFrame] = []
     p1 = g[m_hc_no_rev].copy()
     if not p1.empty:
         p1["指标值"] = p1[headcount_field]
         p1["命中原因"] = p1.apply(lambda r: f"结算人数是 {int(r[headcount_field])} 人，但没有收入", axis=1)
         parts.append(p1)
-    p2 = g[m_rev_no_hc].copy()
     if not p2.empty:
         p2["指标值"] = p2[revenue_field]
         p2["命中原因"] = p2.apply(lambda r: f"有收入 {_fmt_money(r[revenue_field])} 元，但结算人数是 0", axis=1)
@@ -495,6 +520,8 @@ def _mom_change_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, 
     cost_th = float(params.get("cost_threshold", 1.0))
     gm_th = float(params.get("gm_threshold", 0.3))
     min_abs = float(params.get("min_abs", 0))
+    min_base = float(params.get("min_base", 0))
+    gm_prev_abs_max = float(params.get("gm_prev_abs_max", 1.0))
     group_fields = [str(x) for x in (params.get("group_fields") or ["主体账簿", "三级科目", "实际客户", "部门"])]
     num_fields = [revenue_field, cost_field, profit_field]
     for c in group_fields + ["月"] + num_fields:
@@ -530,17 +557,28 @@ def _mom_change_income(df_inc: pd.DataFrame, target_month: int, rule: dict[str, 
     m["毛利率_prev"] = m.apply(lambda r: (r[profit_field + "_prev"] / r[revenue_field + "_prev"]) if float(r[revenue_field + "_prev"]) != 0 else float("nan"), axis=1)
     m["毛利率变动"] = (m["毛利率"] - m["毛利率_prev"]).abs()
     parts: list[pd.DataFrame] = []
-    p1 = m[(m["收入变动率"].notna()) & (m["收入变动率"].abs() > revenue_th)].copy()
+    p1_mask = (m["收入变动率"].notna()) & (m["收入变动率"].abs() > revenue_th)
+    if min_base > 0:
+        # 基数保护：上月金额太小时（新启动业务），环比比率失真，不作为波动处理。
+        p1_mask &= m[revenue_field + "_prev"].abs() >= min_base
+    p1 = m[p1_mask].copy()
     if not p1.empty:
         p1["指标值"] = p1["收入变动率"]
         p1["命中原因"] = p1.apply(lambda r: f"收入比上个月{'多' if r['收入变动率']>0 else '少'}了 {r['收入变动率']*100:.0f}%（上月 {_fmt_money(r[revenue_field+'_prev'])} 元 → 本月 {_fmt_money(r[revenue_field])} 元）", axis=1)
         parts.append(p1)
-    p2 = m[(m["成本变动率"].notna()) & (m["成本变动率"].abs() > cost_th)].copy()
+    p2_mask = (m["成本变动率"].notna()) & (m["成本变动率"].abs() > cost_th)
+    if min_base > 0:
+        p2_mask &= m[cost_field + "_prev"].abs() >= min_base
+    p2 = m[p2_mask].copy()
     if not p2.empty:
         p2["指标值"] = p2["成本变动率"]
         p2["命中原因"] = p2.apply(lambda r: f"成本比上个月{'多' if r['成本变动率']>0 else '少'}了 {r['成本变动率']*100:.0f}%（上月 {_fmt_money(r[cost_field+'_prev'])} 元 → 本月 {_fmt_money(r[cost_field])} 元）", axis=1)
         parts.append(p2)
-    p3 = m[(m["毛利率"].notna()) & (m["毛利率_prev"].notna()) & (m["毛利率变动"] > gm_th)].copy()
+    p3_mask = (m["毛利率"].notna()) & (m["毛利率_prev"].notna()) & (m["毛利率变动"] > gm_th)
+    if gm_prev_abs_max > 0:
+        # 基线守卫：上月毛利率本身极端（如 -1119%）时变动没有意义，上月已异常的组合由倒挂/负毛利规则负责。
+        p3_mask &= m["毛利率_prev"].abs() <= gm_prev_abs_max
+    p3 = m[p3_mask].copy()
     if not p3.empty:
         p3["指标值"] = p3["毛利率变动"]
         p3["命中原因"] = p3.apply(lambda r: f"毛利率比上个月变动 {r['毛利率变动']*100:.1f} 个百分点（上月 {f'{r['毛利率_prev']*100:.1f}%'} → 本月 {f'{r['毛利率']*100:.1f}%'}）", axis=1)
@@ -829,6 +867,7 @@ def _same_amount_adjacent_months_income(df_inc: pd.DataFrame, target_month: int,
     key_fields = [str(x) for x in (params.get("key_fields") or ["主体账簿", "三级科目", "账载客户", "实际客户", "部门", "项目"])]
     amount_fields = [str(x) for x in (params.get("amount_fields") or ["全额收入", "成本合计"])]
     min_amount = float(params.get("min_amount", 10000))
+    skip_if_identical_months = int(params.get("skip_if_identical_months", 0))
     for c in key_fields + amount_fields + ["月"]:
         if c not in df_inc.columns:
             return pd.DataFrame()
@@ -849,9 +888,21 @@ def _same_amount_adjacent_months_income(df_inc: pd.DataFrame, target_month: int,
     m = cur.merge(prev_g, on=key_fields, how="inner", suffixes=("", "_prev"))
     if m.empty:
         return pd.DataFrame()
+    if skip_if_identical_months > 0:
+        # 连续 skip 个月金额都一样 → 固定费用（如政府客户固定月费），不是重复暂估。
+        first = tgt - skip_if_identical_months
+        if first >= 1:
+            earlier = df[df["_m"] == first].groupby(key_fields, dropna=False)[amount_fields].sum().reset_index()
+            if not earlier.empty:
+                m = m.merge(earlier, on=key_fields, how="left", suffixes=("", f"_p{skip_if_identical_months}"))
     parts: list[pd.DataFrame] = []
     for a in amount_fields:
         p = m[(m[a].abs() >= min_amount) & ((m[a] - m[a + "_prev"]).abs() < 0.01)].copy()
+        if not p.empty and skip_if_identical_months > 0:
+            earlier_col = f"{a}_p{skip_if_identical_months}"
+            if earlier_col in p.columns:
+                # 早于观察窗的月份金额也相同（连续相同≥skip个月）→ 视为固定费用，跳过。
+                p = p[~((p[a + "_prev"] - p[earlier_col]).abs() < 0.01)]
         if not p.empty:
             p["指标值"] = p[a]
             p["命中原因"] = p.apply(
